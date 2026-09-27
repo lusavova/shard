@@ -15,6 +15,8 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/net/publicsuffix"
+
 	"github.com/presmihaylov/shard/pkg/store"
 )
 
@@ -120,7 +122,7 @@ func (s *Store) Set(name, value string, destinations []string, placeholder strin
 	bound := make([]string, 0, len(destinations))
 	for i, dest := range destinations {
 		// The refusal names the position and never the value, so a list of destinations still says which one.
-		canonical, err := validDestination(ordinal(i+1)+" destination", dest)
+		canonical, err := validSecretDestination(ordinal(i+1)+" destination", dest)
 		if err != nil {
 			return Secret{}, err
 		}
@@ -318,6 +320,13 @@ func (s *Store) read(name string) (record, error) {
 		return record{}, fmt.Errorf("decode secret %s: the file is not valid JSON", name)
 	}
 
+	// Fail closed on read: a destination stored before the wildcard rule binds to nothing until the secret
+	// is re-set, and dropping it never echoes the value (SHARD-302, @shard ruling 2026-09-27).
+	rec.Destinations = slices.DeleteFunc(rec.Destinations, func(dest string) bool {
+		_, err := validSecretDestination("destination", dest)
+		return err != nil
+	})
+
 	return rec, nil
 }
 
@@ -396,6 +405,29 @@ func validDestination(subject, dest string) (string, error) {
 		if !labelShape.MatchString(label) {
 			return "", fmt.Errorf("the %s is not a host name", subject)
 		}
+	}
+
+	return canonical, nil
+}
+
+// validSecretDestination is validDestination plus the rule a grant needs: a wildcard is the leftmost
+// label alone over a registrable domain, so *.*, *.com, api.openai.* and *.co.uk never bind a value to
+// hosts the owner does not control.
+func validSecretDestination(subject, dest string) (string, error) {
+	canonical, err := validDestination(subject, dest)
+	if err != nil {
+		return "", err
+	}
+	labels := strings.Split(canonical, ".")
+	if slices.Contains(labels[1:], "*") {
+		return "", fmt.Errorf("the %s puts * past the leftmost label: only the leftmost label is a wildcard", subject)
+	}
+	if labels[0] != "*" {
+		return canonical, nil
+	}
+	// A wildcard over a public suffix (*.com, *.co.uk, *.github.io) matches every registrant under it.
+	if _, err := publicsuffix.EffectiveTLDPlusOne(strings.Join(labels[1:], ".")); err != nil {
+		return "", fmt.Errorf("the %s is a wildcard over a public suffix: name a registrable domain under the *", subject)
 	}
 
 	return canonical, nil
