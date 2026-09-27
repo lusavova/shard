@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"slices"
 	"sync"
 	"syscall"
 
@@ -40,8 +41,10 @@ type Config struct {
 	Address netip.Addr
 	// MAC is the link address every link answers ARP with; the zero value takes a fixed local one.
 	MAC net.HardwareAddr
-	// Redirects maps a TCP port a guest dials, wherever it dials it, to the stack's own listener that takes the flow.
+	// Redirects maps a TCP port a redirected guest dials, wherever it dials it, to the stack's own listener that takes the flow.
 	Redirects map[uint16]uint16
+	// Redirected says whether a guest's Redirects ports go to the listener, and runs per frame under the stack's lock; nil redirects every guest.
+	Redirected func(guest netip.Addr) bool
 	// Drops receives every frame the stack refuses, on the link's own goroutine; nil keeps the refusals silent.
 	Drops func(Drop)
 	// Judge rules on a TCP or UDP flow off the address to a port no listener serves; nil keeps every such flow closed.
@@ -90,9 +93,8 @@ func New(cfg Config) (*Stack, error) {
 		return nil, fmt.Errorf("enable sack: %s", err)
 	}
 
-	s.IPTables().ReplaceTable(stack.NATID, natTable(cfg.Redirects), false)
-
 	st := &Stack{cfg: cfg, stack: s, nextID: 1, links: map[tcpip.NICID]*Link{}, tcpPorts: map[uint16]bool{}, udpPorts: map[uint16]bool{}}
+	s.IPTables().ReplaceTable(stack.NATID, natTable(cfg.Redirects, st.redirected), false)
 	if cfg.Judge != nil {
 		st.forward()
 	}
@@ -273,7 +275,23 @@ func (l *Link) send(ctx context.Context) error {
 // quiet reports the ends a closed link produces on either side, Linux answers a dead datagram peer with ECONNREFUSED, which are how a pump stops and not a fault.
 func quiet(err error) bool {
 	return errors.Is(err, io.EOF) || errors.Is(err, os.ErrClosed) || errors.Is(err, net.ErrClosed) ||
-		errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.EPIPE) || errors.Is(err, syscall.ENOTCONN) || errors.Is(err, syscall.EDESTADDRREQ)
+		errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.EPIPE) || errors.Is(err, syscall.ENOTCONN) || errors.Is(err, syscall.EDESTADDRREQ) ||
+		guestEnded(err)
+}
+
+// guestEnds are the gVisor errors of a flow the guest reset; gonet hands one on as its text alone, so the text is what matches.
+var guestEnds = []string{(&tcpip.ErrConnectionReset{}).String(), (&tcpip.ErrNotConnected{}).String()}
+
+func guestEnded(err error) bool {
+	var op *net.OpError
+	for errors.As(err, &op) && op.Err != nil {
+		if slices.Contains(guestEnds, op.Err.Error()) {
+			return true
+		}
+		err = op.Err
+	}
+
+	return false
 }
 
 // ListenTCP opens a listener on the stack address, which every link's guest can reach.
@@ -286,7 +304,66 @@ func (s *Stack) ListenTCP(port uint16) (net.Listener, error) {
 	s.tcpPorts[port] = true
 	s.mu.Unlock()
 
-	return ln, nil
+	return listener{Listener: ln, stack: s}, nil
+}
+
+// listener hands on what the stack accepts, less a flow the NAT table redirected for a guest it no longer redirects.
+type listener struct {
+	net.Listener
+	stack *Stack
+}
+
+// Accept closes a stale redirect and waits for the next flow: conntrack keeps a tuple's NAT answer for as long as the tuple lives.
+func (ln listener) Accept() (net.Conn, error) {
+	for {
+		conn, err := ln.Listener.Accept()
+		if err != nil {
+			// A server type-asserts an accept error to net.Error, so it goes on as the stack made it.
+			return nil, err
+		}
+		flow, stale, err := ln.stack.stale(conn)
+		if err != nil {
+			return nil, errors.Join(err, conn.Close())
+		}
+		if !stale {
+			return conn, nil
+		}
+		if l := ln.stack.linkOf(flow.Guest); l != nil {
+			l.report(flow.drop(RuleRedirect))
+		}
+		if err := conn.Close(); err != nil {
+			return nil, fmt.Errorf("close the stale redirect of %s to %s: %w", flow.Guest, flow.Destination, err)
+		}
+	}
+}
+
+// stale finds the flow the NAT table redirected onto conn for a guest it no longer redirects.
+func (s *Stack) stale(conn net.Conn) (Flow, bool, error) {
+	local, err := netip.ParseAddrPort(conn.LocalAddr().String())
+	if err != nil {
+		return Flow{}, false, fmt.Errorf("read the local address of an accepted flow: %w", err)
+	}
+	remote, err := netip.ParseAddrPort(conn.RemoteAddr().String())
+	if err != nil {
+		return Flow{}, false, fmt.Errorf("read the remote address of an accepted flow: %w", err)
+	}
+	id := stack.TransportEndpointID{
+		LocalPort:     local.Port(),
+		LocalAddress:  tcpip.AddrFrom4(local.Addr().As4()),
+		RemotePort:    remote.Port(),
+		RemoteAddress: tcpip.AddrFrom4(remote.Addr().As4()),
+	}
+	addr, port, lookupErr := s.stack.IPTables().OriginalDst(id, ipv4.ProtocolNumber, tcp.ProtocolNumber)
+	// No original destination, or the one it landed on, is a flow conntrack never rewrote: the guest dialed the listener itself.
+	if lookupErr != nil {
+		return Flow{}, false, nil
+	}
+	original := netip.AddrPortFrom(netip.AddrFrom4(addr.As4()), port)
+	if original == local || s.redirected(remote.Addr()) {
+		return Flow{}, false, nil
+	}
+
+	return Flow{Guest: remote.Addr(), Protocol: "tcp", Destination: original}, true, nil
 }
 
 // ListenPacket opens a UDP socket on the stack address; a reply goes out the link that carries its guest.
