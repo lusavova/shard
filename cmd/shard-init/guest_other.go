@@ -16,4 +16,6 @@ func confine() error { return nil }
 
 func applyAddress(supervisor.Address) error { return errNotLinux }
 
+func reseed([]byte) error { return errNotLinux }
+
 func powerOff(bool) error { return nil }
