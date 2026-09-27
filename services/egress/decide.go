@@ -76,6 +76,45 @@ func (s *Service) DecideName(sb models.Sandbox, name string) (Decision, error) {
 	return Decision{Action: models.ActionDeny, ID: network.RuleDefault, Reason: "no rule of policy " + sb.Policy + " matches " + name}, nil
 }
 
+// anyLeavesDNS says an any rule leaves port 53 open, which is what let a guest resolve before the resolver.
+func anyLeavesDNS(rule models.Rule) bool {
+	return rule.Destination.Kind == models.DestinationGroup && rule.Destination.Value == GroupAny && (len(rule.Ports) == 0 || slices.Contains(rule.Ports, dns.Port))
+}
+
+// resolves is DecideName's walk over the stored rules: the implied rules are addresses, which never match a name.
+func resolves(rules []models.Rule, name string) bool {
+	for _, rule := range rules {
+		if matchesName(rule, name) {
+			return rule.Action == models.ActionAllow
+		}
+	}
+
+	return false
+}
+
+// samples are names a rule matches, built on a label no rule spells, so only a deny as wide as the rule shadows them all.
+func samples(rule models.Rule, fresh string) []string {
+	switch rule.Destination.Kind {
+	case models.DestinationGroup:
+		return []string{fresh}
+	case models.DestinationDomain:
+		return []string{strings.ReplaceAll(rule.Destination.Value, "*", fresh)}
+	case models.DestinationDomainSuffix:
+		return []string{rule.Destination.Value, fresh + "." + rule.Destination.Value}
+	}
+
+	return nil
+}
+
+func freshLabel(rules []models.Rule) string {
+	label := "x"
+	for slices.ContainsFunc(rules, func(rule models.Rule) bool { return slices.Contains(strings.Split(rule.Destination.Value, "."), label) }) {
+		label += "x"
+	}
+
+	return label
+}
+
 // matchesName says whether a rule speaks for a name alone: an address rule cannot, and only a deny that closes both web ports refuses a lookup.
 func matchesName(rule models.Rule, name string) bool {
 	if rule.Action == models.ActionDeny && !closesName(rule) {
@@ -84,8 +123,7 @@ func matchesName(rule models.Rule, name string) bool {
 
 	switch rule.Destination.Kind {
 	case models.DestinationGroup:
-		// An any rule speaks for a name when it leaves port 53 open, which is what let a guest resolve before the resolver.
-		return rule.Destination.Value == GroupDNS || (rule.Destination.Value == GroupAny && (len(rule.Ports) == 0 || slices.Contains(rule.Ports, dns.Port)))
+		return rule.Destination.Value == GroupDNS || anyLeavesDNS(rule)
 	case models.DestinationDomain:
 		return MatchHost(rule.Destination.Value, name)
 	case models.DestinationDomainSuffix:

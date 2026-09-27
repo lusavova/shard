@@ -135,9 +135,10 @@ sandbox, each addition marked `implied`:
 
 - **`dns`**: a policy that names a domain or a suffix, or says `allow dns`, allows `udp` and `tcp` 53
   to shard's resolver on the bridge gateway, and to nothing else. A name is no use to a guest that
-  cannot resolve it. A policy of only address and `any` rules opens no DNS, and a secret does not
-  open it either: name the host in the policy, or say `allow dns`, if the guest must resolve it. When
-  an explicit rule opened it, the implied rule reads `dns rule` in place of `dns`.
+  cannot resolve it. An `allow any` that leaves port 53 open implies no rule, since it reaches the
+  resolver already. A policy of only address rules opens no DNS, and a secret does not open it
+  either: name the host in the policy, or say `allow dns`, if the guest must resolve it. When an
+  explicit rule opened it, the implied rule reads `dns rule` in place of `dns`.
 
 A sandbox with a policy resolves through shard's resolver alone: its `resolv.conf` names the gateway,
 and port 53 to anywhere else is turned to the gateway on the host, so a policy attached after the
@@ -156,8 +157,10 @@ A policy of only address rules is the case to watch. `allow 203.0.113.7` gives t
 it can reach, and no way to resolve anything, so every tool that looks a name up first fails on the
 lookup. It is in the egress log, as a `dns` record that denies the name the tool asked for, and what
 never appears is a request to that host: a denied lookup under no request for that host is this
-case. `shard policy create` says so at the moment you store such a policy. Add a name rule for the
-host, or add `--allow dns`, and the implied `dns` opens with it.
+case. `shard policy create` says so at the moment you store such a policy, and also when earlier
+denies cover every name an allow opens, such as `deny any` before `allow api.example.com`, since the
+resolver takes the first match. Add a name rule for the host, or add `--allow dns`, and the implied
+`dns` opens with it.
 
 A rule id is its position in the effective order, so an edit that opens DNS on a policy that had none
 puts two implied rules in front and moves every rule down by two. `shard inspect` and the `rule`
