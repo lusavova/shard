@@ -169,6 +169,12 @@ func (c *Control) Reseed() error {
 	return c.request(Message{Kind: KindReseed, Seed: seed})
 }
 
+// Freeze flushes the guest's root and holds every write to it, so a disk copied while the VM is paused is whole.
+func (c *Control) Freeze() error { return c.request(Message{Kind: KindFreeze}) }
+
+// Thaw lets the guest's root take writes again; a root that is not frozen is already thawed.
+func (c *Control) Thaw() error { return c.request(Message{Kind: KindThaw}) }
+
 func (c *Control) Close() error { return c.conn.Close() }
 
 // request sends one message and waits for the guest's done, or its failure as an error.

@@ -38,6 +38,10 @@ type machine struct {
 	swap   sync.Mutex
 	link   *netstack.Link
 	cancel context.CancelFunc
+	// freezing, taken before swap, holds each freeze and thaw of the guest's root until the guest answers, so none lands inside another.
+	freezing sync.Mutex
+	// pausing, under freezing, is a pause that froze the guest's root and still means to stop the VM.
+	pausing bool
 	// events closes when the control connection ended, which is the guest gone.
 	events chan struct{}
 
@@ -190,6 +194,12 @@ func (p *Provider) attach(ctx context.Context, id, dir string, r record, client 
 	if state.OOM {
 		// The guest kept a kill no host heard; the marker is on disk and it is going, so there is nothing to follow.
 		return nil, p.release(ctx, m)
+	}
+	// A guest restored from a pause, or left by a daemon that died mid-pause, holds its root frozen until a host thaws it.
+	if state.Frozen {
+		if err := control.Thaw(); err != nil {
+			return nil, errors.Join(fmt.Errorf("sandbox %s: thaw the guest's root: %w", id, err), m.close())
+		}
 	}
 
 	// The guest holds the entrypoint's output until a logs connection is open, so it is open before any run.
@@ -348,16 +358,30 @@ func (p *Provider) reconnect(m *machine) (bool, error) {
 
 // adopt makes control the machine's stream before the replay is reconciled, so a stop the replay calls for goes down the live one.
 func (p *Provider) adopt(m *machine, control *supervisor.Control, state supervisor.Message) (bool, error) {
+	m.freezing.Lock()
 	m.swap.Lock()
 	if m.closed.Load() {
 		m.swap.Unlock()
+		m.freezing.Unlock()
 
 		return false, control.Close()
 	}
 	dropped := m.control.Swap(control)
 	m.swap.Unlock()
 
-	return true, errors.Join(p.reconcile(m, state), dropped.Close())
+	var thawed error
+	// A root frozen with no pause in flight is a freeze whose answer the drop lost, and nothing else would thaw it.
+	if state.Frozen && !m.pausing {
+		if p.recovering != nil {
+			p.recovering()
+		}
+		if err := control.Thaw(); err != nil {
+			thawed = fmt.Errorf("sandbox %s: thaw the guest's root: %w", m.id, err)
+		}
+	}
+	m.freezing.Unlock()
+
+	return true, errors.Join(thawed, p.reconcile(m, state), dropped.Close())
 }
 
 // reconcile lands what the replayed state says happened while no stream was open, so no reader waits for an event that is gone.

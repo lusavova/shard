@@ -367,6 +367,61 @@ func TestTransportStopEndsTheSupervisor(t *testing.T) {
 	}
 }
 
+// A pause waits on the freeze, and the host that restores the snapshot reads the frozen root off the replay and thaws it.
+func TestTransportFreezeAndThawReplayOnTheNextHost(t *testing.T) {
+	cmd, dial := startTransport(t)
+	ctx := testContext(t)
+	attach := func(wantFrozen bool) *supervisor.Control {
+		t.Helper()
+		c, err := supervisor.Connect(ctx, dial)
+		if err != nil {
+			t.Fatalf("connect: %v", err)
+		}
+		t.Cleanup(func() { _ = c.Close() })
+		if state := awaitKind(t, c, supervisor.KindState); state.Frozen != wantFrozen {
+			t.Fatalf("the replay says frozen %t, want %t", state.Frozen, wantFrozen)
+		}
+
+		return c
+	}
+
+	c := attach(false)
+	for range 2 {
+		if err := c.Freeze(); err != nil {
+			t.Fatalf("freeze: %v", err)
+		}
+	}
+	c = attach(true)
+	for range 2 {
+		if err := c.Thaw(); err != nil {
+			t.Fatalf("thaw: %v", err)
+		}
+	}
+	c = attach(false)
+
+	// A stop still ends a frozen guest.
+	if err := c.Run(supervisor.RunSpec{Argv: childArgv("sleep:60000")}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if err := c.Freeze(); err != nil {
+		t.Fatalf("freeze: %v", err)
+	}
+	if err := c.Stop(); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	awaitKind(t, c, supervisor.KindExit)
+	waited := make(chan error, 1)
+	go func() { waited <- cmd.Wait() }()
+	select {
+	case err := <-waited:
+		if err != nil {
+			t.Fatalf("the supervisor ended with %v, want a clean exit", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("the supervisor did not exit after the stop")
+	}
+}
+
 func TestTransportExecWithNoStdinSeesEOF(t *testing.T) {
 	_, dial := startTransport(t)
 	ctx := testContext(t)
@@ -440,5 +495,29 @@ func TestAnswerStaysOnTheConnectionThatAsked(t *testing.T) {
 	var reply supervisor.Message
 	if err := supervisor.ReadMessage(bufio.NewReader(newHost), &reply); err != nil || reply.ID != 2 || reply.Kind != supervisor.KindDone {
 		t.Fatalf("the new host read %+v (%v), want done 2", reply, err)
+	}
+}
+
+// A freeze whose host was replaced before the answer is undone, since the new host's replay may have read the root before it froze.
+func TestAFreezeNoHostHeardIsUndone(t *testing.T) {
+	_, oldGuest := net.Pipe()
+	newHost, newGuest := net.Pipe()
+	defer oldGuest.Close()
+	defer newHost.Close()
+	tr := &transport{control: newGuest}
+
+	tr.freeze(oldGuest, 1)
+	if tr.frozen.Load() {
+		t.Fatal("the root stays frozen after a freeze no host heard")
+	}
+
+	go tr.freeze(newGuest, 2)
+	_ = newHost.SetReadDeadline(time.Now().Add(5 * time.Second))
+	var reply supervisor.Message
+	if err := supervisor.ReadMessage(bufio.NewReader(newHost), &reply); err != nil || reply.ID != 2 || reply.Kind != supervisor.KindDone {
+		t.Fatalf("the new host read %+v (%v), want done 2", reply, err)
+	}
+	if !tr.frozen.Load() {
+		t.Fatal("the root is not frozen after a freeze its host heard")
 	}
 }

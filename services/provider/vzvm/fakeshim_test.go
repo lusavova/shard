@@ -1,12 +1,14 @@
 package vzvm_test
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io/fs"
 	"log"
 	"net"
 	"os"
@@ -15,11 +17,13 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
 
 	"github.com/presmihaylov/shard/pkg/vz"
+	"github.com/presmihaylov/shard/services/supervisor"
 )
 
 // The test binary plays the shim when the provider execs it with this set; the guest is the real shard-init over unix sockets.
@@ -137,7 +141,29 @@ type fakeMachine struct {
 	streams map[net.Conn]struct{}
 	// holdUntil is how long a dial answers with a stream that ends at once, after a reset SIGUSR2 asked for.
 	holdUntil time.Time
+	// frozen is the guest root as the host last froze or thawed it; the fake's guest is not PID 1 and freezes nothing itself.
+	frozen bool
+	// controls counts the control streams the host opened, so a reset can wait for the next one.
+	controls int
 }
+
+// unfrozenFile lands in the state directory when a pause stopped a guest whose root still took writes, so a clone could read a torn disk.
+const unfrozenFile = "unfrozen-pause"
+
+// frozenFile is in the state directory while the guest's root is frozen, so a test sees a guest left unable to write.
+const frozenFile = "frozen-root"
+
+// cutFreezeFile in the state directory lets the next freeze reach the guest and loses its answer, as a reset between the two would.
+const cutFreezeFile = "cut-freeze-answer"
+
+// resetOnPauseFile in the state directory resets every stream under the next VM pause, and holds that pause until the host dialed again.
+const resetOnPauseFile = "reset-on-pause"
+
+// holdDialsFile in the state directory answers every dial with a stream that ends at once, until the test removes it.
+const holdDialsFile = "hold-dials"
+
+// orderFile in the state directory, once a test creates it, takes one line per freeze and thaw in the order the guest reads them.
+const orderFile = "control-order"
 
 // resetHold is longer than the entrypoint the hold test runs, so its exit lands while no stream is open.
 const resetHold = 1500 * time.Millisecond
@@ -152,14 +178,17 @@ func bootFake(cfg vz.Config) (*fakeMachine, error) {
 		id = hex.EncodeToString(b[:])
 	}
 	// The framework refuses a save made under another identifier, and so does the fake.
+	restoredFrozen := false
 	if cfg.Restore != "" {
 		saved, err := os.ReadFile(cfg.Restore)
 		if err != nil {
 			return nil, fmt.Errorf("read the saved state: %w", err)
 		}
-		if strings.TrimSpace(string(saved)) != id {
-			return nil, fmt.Errorf("the saved state belongs to machine %s, not %s", strings.TrimSpace(string(saved)), id)
+		savedID, frozen := strings.CutSuffix(strings.TrimSpace(string(saved)), "\n"+frozenFile)
+		if savedID != id {
+			return nil, fmt.Errorf("the saved state belongs to machine %s, not %s", savedID, id)
 		}
+		restoredFrozen = frozen
 	}
 
 	dir := filepath.Join(filepath.Dir(cfg.Socket), "guest")
@@ -193,8 +222,49 @@ func bootFake(cfg vz.Config) (*fakeMachine, error) {
 		m.state = vz.StateStopped
 		m.mu.Unlock()
 	}()
+	// A save holds the guest's memory with its root frozen; the fake's guest is a fresh process, so it is frozen again.
+	if restoredFrozen {
+		if err := errors.Join(freezeGuest(dir), m.setFrozen(true)); err != nil {
+			return nil, errors.Join(err, m.Stop())
+		}
+	}
 
 	return m, nil
+}
+
+// freezeGuest asks the guest to freeze over a control connection of its own, before any host attaches.
+func freezeGuest(dir string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	control, err := supervisor.Connect(ctx, func(ctx context.Context, port uint32) (net.Conn, error) {
+		var d net.Dialer
+
+		return d.DialContext(ctx, "unix", filepath.Join(dir, fmt.Sprintf("%d.sock", port)))
+	})
+	if err != nil {
+		return err
+	}
+	if _, err := control.Next(); err != nil {
+		return errors.Join(err, control.Close())
+	}
+
+	return errors.Join(control.Freeze(), control.Close())
+}
+
+// setFrozen tracks the guest's root, and marks it frozen in the state directory for a test to see.
+func (m *fakeMachine) setFrozen(frozen bool) error {
+	m.mu.Lock()
+	m.frozen = frozen
+	m.mu.Unlock()
+	marker := filepath.Join(filepath.Dir(m.dir), frozenFile)
+	if frozen {
+		return os.WriteFile(marker, nil, 0o600)
+	}
+	if err := os.Remove(marker); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+
+	return nil
 }
 
 func (m *fakeMachine) State() vz.State {
@@ -206,8 +276,86 @@ func (m *fakeMachine) State() vz.State {
 
 func (m *fakeMachine) MachineID() string { return m.id }
 
+// take removes a marker the test left in the state directory, and says whether it was there.
+func (m *fakeMachine) take(name string) (bool, error) {
+	err := os.Remove(filepath.Join(filepath.Dir(m.dir), name))
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+
+	return err == nil, err
+}
+
+// has says whether the test left a marker in the state directory.
+func (m *fakeMachine) has(name string) (bool, error) {
+	_, err := os.Stat(filepath.Join(filepath.Dir(m.dir), name))
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+
+	return err == nil, err
+}
+
+// note appends kind to the order file, when the test made one.
+func (m *fakeMachine) note(kind string) error {
+	f, err := os.OpenFile(filepath.Join(filepath.Dir(m.dir), orderFile), os.O_WRONLY|os.O_APPEND, 0)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	_, err = f.WriteString(kind + "\n")
+
+	return errors.Join(err, f.Close())
+}
+
 func (m *fakeMachine) Pause() error {
+	reset, err := m.take(resetOnPauseFile)
+	if err != nil {
+		return err
+	}
+	if reset {
+		if err := m.resetAndAwaitHost(); err != nil {
+			return err
+		}
+	}
+	m.mu.Lock()
+	frozen := m.frozen
+	m.mu.Unlock()
+	if !frozen {
+		if err := os.WriteFile(filepath.Join(filepath.Dir(m.dir), unfrozenFile), nil, 0o600); err != nil {
+			return err
+		}
+	}
+
 	return m.move(vz.StateRunning, vz.StatePaused, syscall.SIGSTOP)
+}
+
+// resetAndAwaitHost drops every stream and returns once the host opened a control stream again and had time to act on its replay.
+func (m *fakeMachine) resetAndAwaitHost() error {
+	m.mu.Lock()
+	before := m.controls
+	m.mu.Unlock()
+	m.dropStreams()
+
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		m.mu.Lock()
+		dialed := m.controls > before
+		m.mu.Unlock()
+		if dialed {
+			break
+		}
+		if time.Now().After(deadline) {
+			return errors.New("the host did not open a control stream again after the reset")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	// A thaw the host sends on its replay lands well inside this, and the pause then sees the root it left.
+	time.Sleep(500 * time.Millisecond)
+
+	return nil
 }
 
 func (m *fakeMachine) Resume() error {
@@ -229,11 +377,18 @@ func (m *fakeMachine) move(from, to vz.State, sig syscall.Signal) error {
 }
 
 func (m *fakeMachine) Save(path string) error {
-	if m.State() != vz.StatePaused {
-		return fmt.Errorf("the vm is %s, and only a paused one saves", m.State())
+	m.mu.Lock()
+	state, frozen := m.state, m.frozen
+	m.mu.Unlock()
+	if state != vz.StatePaused {
+		return fmt.Errorf("the vm is %s, and only a paused one saves", state)
+	}
+	saved := m.id
+	if frozen {
+		saved += "\n" + frozenFile
 	}
 
-	return os.WriteFile(path, []byte(m.id), 0o600)
+	return os.WriteFile(path, []byte(saved), 0o600)
 }
 
 func (m *fakeMachine) Stop() error {
@@ -249,12 +404,19 @@ func (m *fakeMachine) Connect(port uint32) (net.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
+	held, err := m.has(holdDialsFile)
+	if err != nil {
+		return nil, errors.Join(err, conn.Close())
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if time.Now().Before(m.holdUntil) {
+	if held || time.Now().Before(m.holdUntil) {
 		return conn, conn.Close()
 	}
 	m.streams[conn] = struct{}{}
+	if port == supervisor.ControlPort {
+		m.controls++
+	}
 
 	return &stream{Conn: conn, machine: m}, nil
 }
@@ -273,6 +435,40 @@ func (m *fakeMachine) dropStreams() {
 type stream struct {
 	net.Conn
 	machine *fakeMachine
+	// cut loses the next answer the guest sends and resets every stream, once a freeze asked for it.
+	cut atomic.Bool
+}
+
+func (s *stream) Write(p []byte) (int, error) {
+	for kind, frozen := range map[string]bool{supervisor.KindFreeze: true, supervisor.KindThaw: false} {
+		if !strings.Contains(string(p), `"kind":"`+kind+`"`) {
+			continue
+		}
+		if err := errors.Join(s.machine.setFrozen(frozen), s.machine.note(kind)); err != nil {
+			return 0, err
+		}
+		if !frozen {
+			continue
+		}
+		cut, err := s.machine.take(cutFreezeFile)
+		if err != nil {
+			return 0, err
+		}
+		s.cut.Store(cut)
+	}
+
+	return s.Conn.Write(p)
+}
+
+func (s *stream) Read(p []byte) (int, error) {
+	n, err := s.Conn.Read(p)
+	if s.cut.Load() && strings.Contains(string(p[:n]), `"kind":"`+supervisor.KindDone+`"`) {
+		s.machine.dropStreams()
+
+		return 0, net.ErrClosed
+	}
+
+	return n, err
 }
 
 func (s *stream) Close() error {
