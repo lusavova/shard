@@ -55,8 +55,10 @@ processes and a paused one holds it in its snapshot, so both are refused with `s
 verbs are safe to run again: a grant the record already names changes nothing.
 
 A grant is refused when the guest environment already holds that name, and a refused grant writes
-nothing at all. `shard secret rm` refuses while any sandbox holds a grant and names the holders:
-ungrant it first, remove those sandboxes, or pass `--force`.
+nothing at all. A secret named for a trust variable, such as `SSL_CERT_FILE` or `CURL_CA_BUNDLE`, is
+refused at create and at a grant, since the proxy points those at the trust store. `shard secret rm`
+refuses while any sandbox holds a grant and names the holders: ungrant it first, remove those
+sandboxes, or pass `--force`.
 
 **The substitution.** The placeholder is `mock-NAME` by default. A sandbox that holds a secret is
 fronted: the host turns its HTTP on 80 and 443 to the egress proxy, which is where the value goes
@@ -98,9 +100,9 @@ the command line either way and the operator is about to type it again.
 ## Clients the proxy certificate does not reach
 
 The proxy CA is planted at the path the image already reads, and `SSL_CERT_FILE`,
-`REQUESTS_CA_BUNDLE` and `NODE_EXTRA_CA_CERTS` point at it. OpenSSL and everything on it reads it:
-curl, Python, Ruby, PHP, Go and .NET on Linux. So do Python `requests` and `httpx`, and Node, Deno
-and Bun. Three kinds of client do not.
+`REQUESTS_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS` and `CURL_CA_BUNDLE` point at it. OpenSSL and everything
+on it reads it: curl, Python, Ruby, PHP, Go and .NET on Linux. So do Python `requests` and `httpx`,
+and Node, Deno and Bun. Three kinds of client do not.
 
 **Java** trusts its own keystore. Import the CA in the image with `keytool -importcert`, or point
 `-Djavax.net.ssl.trustStore` at a store that holds it. The CA is the file `SSL_CERT_FILE` names.
