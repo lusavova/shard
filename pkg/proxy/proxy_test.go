@@ -18,6 +18,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestLoadCAMintsOnceAndSignsALeafPerHost(t *testing.T) {
@@ -83,18 +84,32 @@ func TestLeafCacheStaysBounded(t *testing.T) {
 type fakeDirector struct {
 	upstream netip.AddrPort
 	fail     error
+	// resolve is how long a decision takes, as a lookup that waits on external DNS does.
+	resolve time.Duration
+	// deciding gets the context of each decision as it starts.
+	deciding chan context.Context
 
 	mu   sync.Mutex
 	seen []Request
 }
 
-func (d *fakeDirector) Decide(_ context.Context, req Request) (Decision, error) {
+func (d *fakeDirector) Decide(ctx context.Context, req Request) (Decision, error) {
 	d.mu.Lock()
 	d.seen = append(d.seen, req)
 	d.mu.Unlock()
 
+	if d.deciding != nil {
+		d.deciding <- ctx
+	}
 	if d.fail != nil {
 		return Decision{}, d.fail
+	}
+	if d.resolve > 0 {
+		select {
+		case <-ctx.Done():
+			return Decision{}, ctx.Err()
+		case <-time.After(d.resolve):
+		}
 	}
 	if req.Host == "deny.test" {
 		return Decision{Rule: "deny deny.test tcp:80,443", Reason: "the policy names it"}, nil
@@ -122,6 +137,8 @@ type harness struct {
 	plain    net.Listener
 	secure   net.Listener
 	log      *bytes.Buffer
+	// stop ends Serve and returns what it returned; a second call returns the same.
+	stop func() error
 }
 
 // newHarness runs the proxy over two loopback listeners in front of an upstream that echoes what it got.
@@ -153,9 +170,12 @@ func newHarness(t *testing.T, upstream http.Handler) *harness {
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
 	go func() { done <- server.Serve(ctx, h.plain, h.secure) }()
-	t.Cleanup(func() {
+	h.stop = sync.OnceValue(func() error {
 		cancel()
-		if err := <-done; err != nil {
+		return <-done
+	})
+	t.Cleanup(func() {
+		if err := h.stop(); err != nil {
 			t.Errorf("Serve ended with %v", err)
 		}
 	})
@@ -378,4 +398,108 @@ func TestProxyStreamsABodyPastTheCapUnchanged(t *testing.T) {
 	if !placeholderSeen {
 		t.Error("a body past the cap was rewritten, want it streamed as it was")
 	}
+}
+
+// A fire-and-forget client half-closes once its request is written, and net/http cancels the request context on that EOF (SHARD-238).
+func TestProxyFinishesARequestAfterTheClientHalfCloses(t *testing.T) {
+	arrived := make(chan string, 1)
+	h := newHarness(t, http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		arrived <- r.URL.Path
+	}))
+	h.director.resolve = 200 * time.Millisecond
+
+	if answer := sendAndHalfClose(t, h); !strings.HasPrefix(answer, "HTTP/1.1 200") {
+		t.Errorf("the half-closed client got:\n%s", answer)
+	}
+	select {
+	case path := <-arrived:
+		if path != "/ping" {
+			t.Errorf("the upstream got %s, want /ping", path)
+		}
+	default:
+		t.Error("the upstream never got the request")
+	}
+}
+
+func TestProxyGivesUpOnAGoneClientAfterTheGrace(t *testing.T) {
+	previous := clientGoneGrace
+	clientGoneGrace = 100 * time.Millisecond
+	t.Cleanup(func() { clientGoneGrace = previous })
+
+	h := newHarness(t, http.HandlerFunc(echoHandler))
+	h.director.resolve = 5 * time.Second
+
+	start := time.Now()
+	if answer := sendAndHalfClose(t, h); !strings.HasPrefix(answer, "HTTP/1.1 502") {
+		t.Errorf("a decision past the grace got:\n%s", answer)
+	}
+	if waited := time.Since(start); waited > 2*time.Second {
+		t.Errorf("the proxy held the request %s after its client went", waited)
+	}
+}
+
+// The grace is the client's, never the server's: a stopped proxy cuts a request its client left at once.
+func TestProxyStopCutsARequestItsClientLeft(t *testing.T) {
+	previous := shutdownGrace
+	shutdownGrace = 100 * time.Millisecond
+	t.Cleanup(func() { shutdownGrace = previous })
+	h := newHarness(t, http.HandlerFunc(echoHandler))
+	h.director.resolve = time.Minute
+	h.director.deciding = make(chan context.Context, 1)
+
+	halfClose(t, h)
+	var decision context.Context
+	select {
+	case decision = <-h.director.deciding:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the proxy never asked the director")
+	}
+	if err := h.stop(); err != nil {
+		t.Fatalf("Serve ended with %v", err)
+	}
+
+	select {
+	case <-decision.Done():
+	case <-time.After(time.Second):
+		t.Error("the decision outlived the stopped proxy")
+	}
+}
+
+// halfClose writes one request and closes the write side, as a fire-and-forget client does.
+func halfClose(t *testing.T, h *harness) net.Conn {
+	t.Helper()
+
+	conn, err := net.Dial("tcp", h.plain.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	if _, err := io.WriteString(conn, "GET /ping HTTP/1.1\r\nHost: api.test\r\n\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	tcp, ok := conn.(*net.TCPConn)
+	if !ok {
+		t.Fatalf("the dial gave a %T", conn)
+	}
+	if err := tcp.CloseWrite(); err != nil {
+		t.Fatal(err)
+	}
+
+	return conn
+}
+
+// sendAndHalfClose half-closes one request and reads what comes back.
+func sendAndHalfClose(t *testing.T, h *harness) string {
+	t.Helper()
+
+	conn := halfClose(t, h)
+	if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	answer, err := io.ReadAll(conn)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return string(answer)
 }
