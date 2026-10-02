@@ -18,6 +18,8 @@ import (
 type recRepo struct {
 	t       *testing.T
 	records map[string]*models.Sandbox
+	// updateErr fails every record write, the way a full root does.
+	updateErr error
 }
 
 func (r *recRepo) Get(id string) (models.Sandbox, error) {
@@ -43,6 +45,9 @@ func (r *recRepo) List() ([]models.Sandbox, error) {
 func (r *recRepo) Create(sb models.Sandbox) (models.Sandbox, error) { return sb, nil }
 
 func (r *recRepo) Update(id string, mutate func(*models.Sandbox) error) error {
+	if r.updateErr != nil {
+		return r.updateErr
+	}
 	sb, ok := r.records[id]
 	if !ok {
 		return errors.New("no sandbox " + id)
@@ -65,7 +70,8 @@ type recProvider struct {
 	models.Provider
 
 	status map[string]models.Status
-	err    error
+	// errs fails the probe of one sandbox only.
+	errs map[string]error
 	// wedge makes every Status block until the probe budget cancels it, the way a frozen sandbox does.
 	wedge bool
 }
@@ -78,8 +84,8 @@ func (p *recProvider) Status(ctx context.Context, id string) (models.Status, err
 
 		return models.Status{}, ctx.Err()
 	}
-	if p.err != nil {
-		return models.Status{}, p.err
+	if err := p.errs[id]; err != nil {
+		return models.Status{}, err
 	}
 
 	return p.status[id], nil
@@ -299,6 +305,26 @@ func TestReconcileRunsAPendingRecordWithALiveProcess(t *testing.T) {
 	}
 }
 
+// A full root fails the write that says running, and the live sandbox still needs its egress policy (SHARD-341).
+func TestReconcileReAppliesTheHostRulesForALiveSandboxItCannotRecord(t *testing.T) {
+	sb := models.Sandbox{ID: "sandbox1", State: models.StatePending}
+	lab := newReconcileLab(t, &recProvider{status: map[string]models.Status{"sandbox1": alive(51)}}, sb)
+	lab.repo.updateErr = errors.New("write the record: no space left on device")
+
+	if err := lab.run(t); err != nil {
+		t.Fatalf("ReconcileAll = %v, want nil so one record does not stop the daemon", err)
+	}
+	if got := lab.repo.records["sandbox1"]; got.State != models.StatePending {
+		t.Errorf("the record says %s, want pending: the write failed, so the record is left as it is", got.State)
+	}
+	if !reported(lab.reports, "sandbox sandbox1", "no space left on device") {
+		t.Errorf("the reports %q name no line with sandbox1 and its error", lab.reports)
+	}
+	if lab.net.applied != 1 {
+		t.Errorf("the host rules were re-applied %d times, want once: the sandbox lives though its record says pending", lab.net.applied)
+	}
+}
+
 func TestReconcileReportsEveryRecordItCorrected(t *testing.T) {
 	status := map[string]models.Status{"sandbox1": gone(), "sandbox2": gone(), "sandbox3": alive(7)}
 	lab := newReconcileLab(t, &recProvider{status: status},
@@ -318,17 +344,47 @@ func TestReconcileReportsEveryRecordItCorrected(t *testing.T) {
 	}
 }
 
-func TestReconcileAnswersWithWhatTheSubstrateRefused(t *testing.T) {
-	provider := &recProvider{err: errors.New("runsc is not on this host")}
-	lab := newReconcileLab(t, provider, models.Sandbox{ID: "sandbox1", State: models.StateRunning})
+// A probe that fails for one sandbox, a full root say, is reported and never stops the daemon serving the rest (SHARD-341).
+func TestReconcileReportsAProbeThatFailedAndCorrectsTheRest(t *testing.T) {
+	provider := &recProvider{
+		status: map[string]models.Status{"sandbox2": gone()},
+		errs:   map[string]error{"sandbox1": errors.New("write the restart count: no space left on device")},
+	}
+	lab := newReconcileLab(t, provider,
+		models.Sandbox{ID: "sandbox1", State: models.StateRunning, PID: 42},
+		models.Sandbox{ID: "sandbox2", State: models.StateRunning, PID: 43})
 
-	err := lab.run(t)
-	if err == nil || !strings.Contains(err.Error(), "runsc is not on this host") {
-		t.Fatalf("ReconcileAll = %v, want the substrate's own refusal", err)
+	if err := lab.run(t); err != nil {
+		t.Fatalf("ReconcileAll = %v, want nil so one sandbox's error does not stop the daemon", err)
 	}
-	if got := lab.repo.records["sandbox1"]; got.State != models.StateRunning {
-		t.Errorf("the record says %s, want it untouched while the substrate cannot answer", got.State)
+	if got := lab.repo.records["sandbox1"]; got.State != models.StateRunning || got.PID != 42 {
+		t.Errorf("sandbox1 says %s with pid %d, want it untouched while the substrate cannot answer", got.State, got.PID)
 	}
+	if got := lab.repo.records["sandbox2"]; got.State != models.StateStopped {
+		t.Errorf("sandbox2 says %s, want stopped: one failed probe must not stop the others being corrected", got.State)
+	}
+	if !reported(lab.reports, "sandbox sandbox1", "no space left on device") {
+		t.Errorf("the reports %q name no line with sandbox1 and its error", lab.reports)
+	}
+	// sandbox1 is left running, so its rules go back on.
+	if lab.net.applied != 1 {
+		t.Errorf("the host rules were re-applied %d times, want once for the record left running", lab.net.applied)
+	}
+}
+
+// reported says one line holds every part.
+func reported(lines []string, parts ...string) bool {
+	for _, line := range lines {
+		all := true
+		for _, part := range parts {
+			all = all && strings.Contains(line, part)
+		}
+		if all {
+			return true
+		}
+	}
+
+	return false
 }
 
 func TestReconcileAnswersWhenTheHostRulesCannotGoBackOn(t *testing.T) {
@@ -376,7 +432,7 @@ func TestReconcileProbesFrozenSandboxesConcurrently(t *testing.T) {
 	}
 }
 
-func TestReconcileRefusesWhenItCannotReadTheSnapshot(t *testing.T) {
+func TestReconcileReportsASnapshotItCannotRead(t *testing.T) {
 	// A file where the snapshot directory belongs: the stat fails, and it fails with neither a yes nor a no.
 	blocked := filepath.Join(t.TempDir(), "snapshot")
 	if err := os.WriteFile(blocked, []byte("not a directory"), 0o600); err != nil {
@@ -386,9 +442,11 @@ func TestReconcileRefusesWhenItCannotReadTheSnapshot(t *testing.T) {
 	sb := models.Sandbox{ID: "sandbox1", State: models.StatePaused, Snapshot: blocked}
 	lab := newReconcileLab(t, &recProvider{status: map[string]models.Status{"sandbox1": gone()}}, sb)
 
-	err := lab.run(t)
-	if err == nil || !strings.Contains(err.Error(), blocked) {
-		t.Fatalf("ReconcileAll = %v, want the stat that failed, naming %s", err, blocked)
+	if err := lab.run(t); err != nil {
+		t.Fatalf("ReconcileAll = %v, want nil so one record does not stop the daemon", err)
+	}
+	if !reported(lab.reports, "sandbox sandbox1", blocked) {
+		t.Errorf("the reports %q name no line with sandbox1 and the stat that failed on %s", lab.reports, blocked)
 	}
 
 	got := lab.repo.records["sandbox1"]
