@@ -227,7 +227,7 @@ as the guest's `eth0` with a MAC derived from the lease, and `shard-init` takes 
 gateway and the resolver over vsock once the guest is up, before the entrypoint runs. The next start
 after a stop leases the same address and builds the tap again for the new vmm; `rm` releases both.
 
-`pause` stops the vCPUs, writes the vmm's state and the guest's whole memory into the snapshot
+`pause` freezes the guest, stops the vCPUs, writes the vmm's state and the guest's whole memory into the snapshot
 directory beside a reflinked copy of `overlay.raw`, marks it complete and ends the vmm. It stages
 all of that beside the snapshot the directory already holds and swaps the two in one step, so no cut
 leaves the sandbox with neither. The record stays, so `inspect` reports the sandbox stopped and the
@@ -243,9 +243,16 @@ corrected at the load on x86_64, where it reads kvm-clock, and nowhere else. Eve
 snapshot also wakes with the same guest crng key, and the kernel has no vmgenid driver, so each
 `resume` and `fork` sends the guest 32 bytes of host entropy and `shard-init` rekeys from them
 before the verb returns (SHARD-266). A restore keeps a marker until the seed lands, so a daemon cut
-in between reseeds the guest it adopts. The vCPUs run from the load until the seed lands, so a
-process the snapshot held can still draw from the saved key in those few milliseconds; freezing the
-guest before the save, as `vz` does, is SHARD-409.
+in between reseeds the guest it adopts, and ends one that refuses the reseed or the thaw. No guest
+process draws from the saved key in between, because the snapshot holds the guest frozen: `pause`
+has `shard-init` freeze the sandbox cgroup and then the root's writes before it stops the vCPUs, and
+every restore reseeds the guest before it thaws it (SHARD-409). The root is an overlay, which takes
+no `FIFREEZE`, so the freeze holds its ext4 upper disk instead. A guest that cannot freeze refuses
+the pause, and the VM runs on. The thaw paths are the ones `docs/provider-vz.md` lists for `vz`: a
+failed pause, a daemon cut between the freeze and the snapshot, and a control connection that
+dropped with the freeze's answer. A VM booted before this change runs a `shard-init` whose freeze
+cannot reach the upper disk. Its state says so, and the pause is refused before any freeze, with an
+error that says to restart the sandbox first.
 
 Two limits ride along. The data dir must clone a file by sharing its blocks, which `fork` on this
 provider needs and `docs/daemon.md` covers: the daemon probes its root and puts a loopback XFS under
