@@ -24,6 +24,7 @@ import (
 	"github.com/presmihaylov/shard/services/network"
 	"github.com/presmihaylov/shard/services/provider/vzvm"
 	"github.com/presmihaylov/shard/services/sandbox"
+	"github.com/presmihaylov/shard/services/supervisor"
 )
 
 // Config is the wiring one resident daemon needs.
@@ -59,7 +60,7 @@ func Run(ctx context.Context, cfg Config) error {
 	life := &lifecycle{deps: d, base: ctx}
 	self := process{deps: d, startedAt: time.Now().UTC().Truncate(time.Second)}
 
-	err = New(cfg.Root, cfg.Out, apiTask{deps: d, lifecycle: life, process: self}, proxyTask{deps: d}, dnsTask{deps: d}, egressLogRotation{deps: d}, egressLogTailer{deps: d}, liveness{deps: d, lifecycle: life, interval: livenessInterval}, healthCheck{deps: d, lifecycle: life, interval: healthInterval}, restartPolicy{deps: d, lifecycle: life, interval: restartInterval}).WithReconciler(reconciler{deps: d, lifecycle: life}).Run(ctx)
+	err = New(cfg.Root, cfg.Out, apiTask{deps: d, lifecycle: life, process: self}, proxyTask{deps: d}, dnsTask{deps: d}, egressLogRotation{deps: d}, egressLogTailer{deps: d}, heldLogRotation{deps: d}, liveness{deps: d, lifecycle: life, interval: livenessInterval}, healthCheck{deps: d, lifecycle: life, interval: healthInterval}, restartPolicy{deps: d, lifecycle: life, interval: restartInterval}).WithReconciler(reconciler{deps: d, lifecycle: life}).Run(ctx)
 
 	// The tasks have stopped, so no new create starts; wait out the ones the daemon still runs in the background.
 	life.wait()
@@ -92,6 +93,16 @@ func (r reconciler) Reconcile(ctx context.Context, report func(string)) error {
 	}
 	if len(sandboxes) == 0 {
 		return nil
+	}
+
+	provider, err := r.deps.provider()
+	if err != nil {
+		return err
+	}
+	// No probe has attached a VM yet, so no FileLog writes the output logs this bounds.
+	if err := boundOutputLogs(provider, sandboxes, supervisor.MaxLog); err != nil {
+		// A log it cannot bound is no reason to refuse the daemon, which would then serve no sandbox (SHARD-341).
+		report(fmt.Sprintf("some output logs stay past their bound: %v", err))
 	}
 
 	svc, err := r.lifecycle.service()
