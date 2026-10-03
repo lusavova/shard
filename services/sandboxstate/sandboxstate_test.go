@@ -693,6 +693,80 @@ func TestSweepSnapshotTmpRemovesOrphansAndKeepsRecorded(t *testing.T) {
 	}
 }
 
+// SHARD-381: a write that returns an error may still have landed the rename, so the generation must move or a reader keeps the old record.
+func TestWriteMovesTheGenerationEvenWhenTheDurableWriteFails(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores the directory mode this test uses to force the write to fail")
+	}
+
+	r, _ := repo(t)
+	sb := create(t, r)
+	before := r.Generation()
+
+	// A record directory that rejects a new temp file forces store.WriteFile to return an error, as a landed rename with a failed dir sync does.
+	dir := sandboxDir(t, r, sb.ID)
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatalf("chmod %s: %v", dir, err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+
+	err := r.Update(sb.ID, func(sb *models.Sandbox) error {
+		sb.PID = 4242
+
+		return nil
+	})
+	if err == nil {
+		t.Fatalf("Update over a write-protected directory: want an error, got nil")
+	}
+	if r.Generation() <= before {
+		t.Errorf("the generation did not move after a failed write: before %d, now %d", before, r.Generation())
+	}
+}
+
+// SHARD-381: a Create whose write fails after it may have landed the rename must bump the generation again once it removes the record, or a broker that rebuilt mid-cleanup keeps serving the failed sandbox and its secrets.
+func TestCreateBumpsTheGenerationAfterItCleansUpAFailedWrite(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores the directory mode this test uses to force the write to fail")
+	}
+
+	r, _ := repo(t)
+	before := r.Generation()
+
+	// A umask that strips write makes claimID's new record directory reject the record file, so write fails as a landed rename with a failed dir sync does.
+	old := syscall.Umask(0o222)
+	defer syscall.Umask(old)
+
+	if _, err := r.Create(newSandbox()); err == nil {
+		t.Fatalf("Create over a umask that blocks the record write: want an error, got nil")
+	}
+	// write bumps once when the rename may have landed, and the cleanup must bump again once the record is gone.
+	if moved := r.Generation() - before; moved < 2 {
+		t.Errorf("the generation moved %d after a failed-write cleanup, want at least 2", moved)
+	}
+}
+
+// SHARD-381: a delete that touches the disk must move the generation even on a later error, and a delete of an absent sandbox must not, so a reader rebuilds exactly when the set changed.
+func TestDeleteMovesTheGenerationButANotFoundDeleteDoesNot(t *testing.T) {
+	r, _ := repo(t)
+	sb := create(t, r)
+
+	before := r.Generation()
+	if err := r.Delete(sb.ID); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if r.Generation() <= before {
+		t.Errorf("Delete did not move the generation: before %d, now %d", before, r.Generation())
+	}
+
+	steady := r.Generation()
+	if err := r.Delete(sb.ID); !errors.Is(err, sandboxstate.ErrNotFound) {
+		t.Fatalf("second Delete: %v, want ErrNotFound", err)
+	}
+	if r.Generation() != steady {
+		t.Errorf("a not-found delete moved the generation: was %d, now %d", steady, r.Generation())
+	}
+}
+
 func TestConcurrentUpdatesLoseNothing(t *testing.T) {
 	r, _ := repo(t)
 	sb := create(t, r)
