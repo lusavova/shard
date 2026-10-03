@@ -852,7 +852,7 @@ func (s *Service) stop(ctx context.Context, id string, grace time.Duration, forc
 		return err
 	}
 
-	// force arrives from rm, after its probe answered live or its kill freed the runtime, so it skips the probe.
+	// force arrives from rm, after its probe answered live, its kill freed the runtime or the record said paused, so it skips the probe.
 	if !force {
 		// The opening probe is bounded like rm's, so a plain stop of a wedged sandbox fails fast and typed, not at the client timeout.
 		status, err := s.status(ctx, id, "stop")
@@ -964,8 +964,8 @@ func (s *Service) lastExit(ctx context.Context, id string) (*models.ExitStatus, 
 	return &status, nil
 }
 
-// Remove frees everything a stopped sandbox holds. A sandbox that is still up is refused unless
-// force says to stop it first, with grace as the stop's.
+// Remove frees everything a stopped sandbox holds. A sandbox that is still up or paused is refused
+// unless force says to stop it first, with grace as the stop's.
 func (s *Service) Remove(ctx context.Context, ref string, force bool, grace time.Duration) error {
 	id, err := s.cfg.Repo.Resolve(ref)
 	if err != nil {
@@ -982,11 +982,12 @@ func (s *Service) Remove(ctx context.Context, ref string, force bool, grace time
 	defer unlock()
 
 	// The record dies last below, so an id with no record has nothing else left on the host either.
-	if _, err := s.cfg.Repo.Get(id); err != nil {
+	sb, err := s.cfg.Repo.Get(id)
+	if err != nil {
 		return err
 	}
 
-	if err := s.endIfAlive(ctx, id, force, grace); err != nil {
+	if err := s.endIfAlive(ctx, id, sb.State, force, grace); err != nil {
 		return err
 	}
 
@@ -1009,8 +1010,13 @@ type reclaimer interface {
 	Reclaim(ctx context.Context, id string) error
 }
 
-// endIfAlive refuses a sandbox that is still up, because rm frees the writable layer a stop keeps; --force stops it first, and on a wedge kills it first.
-func (s *Service) endIfAlive(ctx context.Context, id string, force bool, grace time.Duration) error {
+// endIfAlive refuses a sandbox that is still up or paused, because rm frees the writable layer and the snapshot a stop keeps; --force stops it first, and on a wedge kills it first.
+func (s *Service) endIfAlive(ctx context.Context, id string, state models.State, force bool, grace time.Duration) error {
+	// A pause ends the process on gVisor, Firecracker and vz, so only the record says a resume still needs the snapshot, and no probe can wedge that answer.
+	if state == models.StatePaused {
+		return s.refuseOrStop(ctx, id, state, force, grace)
+	}
+
 	status, err := s.status(ctx, id, "rm")
 	var timeout *SubstrateTimeoutError
 	if force && errors.As(err, &timeout) {
@@ -1027,8 +1033,13 @@ func (s *Service) endIfAlive(ctx context.Context, id string, force bool, grace t
 		return nil
 	}
 
+	return s.refuseOrStop(ctx, id, status.State, force, grace)
+}
+
+// refuseOrStop ends a live or paused sandbox for rm when force says so, and refuses it otherwise.
+func (s *Service) refuseOrStop(ctx context.Context, id string, state models.State, force bool, grace time.Duration) error {
 	if !force {
-		return &StateError{ID: id, State: status.State, Fix: fmt.Sprintf("stop it first with shard stop %s, or pass --force", id), Code: models.CodeSandboxNotStopped}
+		return &StateError{ID: id, State: state, Fix: fmt.Sprintf("stop it first with shard stop %s, or pass --force", id), Code: models.CodeSandboxNotStopped}
 	}
 
 	return s.stop(ctx, id, grace, force)
