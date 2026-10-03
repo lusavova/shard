@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
+	"log"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -99,6 +101,8 @@ type Config struct {
 	// Dir is where the provider writes the initrd it builds from Init.
 	Dir  string
 	Dirs StateDirs
+	// Log takes what an operator must see of a guest, such as a refused control line; nil discards it.
+	Log *log.Logger
 }
 
 var _ models.Provider = (*Provider)(nil)
@@ -129,6 +133,9 @@ func New(cfg Config) (*Provider, error) {
 	initrd := filepath.Join(cfg.Dir, initrdFile)
 	if err := bundle.WriteInitrd(cfg.Init, initrd); err != nil {
 		return nil, err
+	}
+	if cfg.Log == nil {
+		cfg.Log = log.New(io.Discard, "", 0)
 	}
 
 	return &Provider{cfg: cfg, initrd: initrd, cgroupRoot: cgroup.Root, machines: map[string]*machine{}, spawning: map[string]bool{}}, nil
