@@ -329,9 +329,9 @@ func TestConformanceOnVMs(t *testing.T) {
 
 			return h.newSpec(t, "/bin/sh", "-c", script)
 		},
-		SnapshotDir: func(t *testing.T) string { return t.TempDir() },
-		Shell:       func(script string) []string { return []string{"/bin/sh", "-c", script} },
-		Reopen:      h.reopen,
+		EmptyDir: func(t *testing.T) string { return t.TempDir() },
+		Shell:    func(script string) []string { return []string{"/bin/sh", "-c", script} },
+		Reopen:   h.reopen,
 		// The window Firecracker measured for the same guest kernel (SHARD-414); VZ has no measure of its own yet.
 		ReseedWindow: 50 * time.Second,
 	})
@@ -649,7 +649,7 @@ func TestAResumeAndAForkCarryTheGuestMemory(t *testing.T) {
 	fork := h.newSpec(t)
 	fork.Name = "twin"
 	fork.Network.Nameservers = []netip.Addr{gateway}
-	if err := h.provider.ForkSnapshot(t.Context(), snap, fork); err != nil {
+	if err := h.provider.ForkCheckpoint(t.Context(), snap, fork); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.provider.Resume(t.Context(), spec.ID, snap); err != nil {
@@ -711,7 +711,7 @@ func TestTheRestoresOfOneSaveReadDifferentRandomBytes(t *testing.T) {
 	ids := []string{spec.ID}
 	for range 4 {
 		fork := h.newSpec(t)
-		if err := h.provider.ForkSnapshot(t.Context(), snap, fork); err != nil {
+		if err := h.provider.ForkCheckpoint(t.Context(), snap, fork); err != nil {
 			t.Fatal(err)
 		}
 		ids = append(ids, fork.ID)
@@ -770,7 +770,7 @@ func TestTheForksOfOneSaveShareNoDrawPastTheFirstTheyDifferOn(t *testing.T) {
 	var forks []models.SandboxSpec
 	for range 2 {
 		fork := h.newSpec(t)
-		if err := h.provider.ForkSnapshot(t.Context(), snap, fork); err != nil {
+		if err := h.provider.ForkCheckpoint(t.Context(), snap, fork); err != nil {
 			t.Fatal(err)
 		}
 		forks = append(forks, fork)
@@ -855,7 +855,7 @@ func TestAPauseFreezesTheRootUnderALoopingWriter(t *testing.T) {
 	t.Logf("the source printed %d before its pause, and its paused disk holds %d", printed, onDisk)
 
 	fork := h.newSpec(t)
-	if err := h.provider.ForkSnapshot(t.Context(), snap, fork); err != nil {
+	if err := h.provider.ForkCheckpoint(t.Context(), snap, fork); err != nil {
 		t.Fatal(err)
 	}
 	if got := execIn(t, h, fork.ID, "echo forked > /root/forked && cat /root/forked"); got != "forked" {

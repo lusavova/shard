@@ -44,9 +44,9 @@ type failingLink struct{ err error }
 
 func (l failingLink) Close() error { return l.err }
 
-// ForkSnapshot is the restore of a snapshot into a new sandbox, which the live fork runs on its capture.
-func (p *Provider) ForkSnapshot(ctx context.Context, dir string, spec models.SandboxSpec) error {
-	return p.forkSnapshot(ctx, dir, spec)
+// ForkCheckpoint is the restore of a checkpoint into a new sandbox, which the live fork runs on its capture.
+func (p *Provider) ForkCheckpoint(ctx context.Context, dir string, spec models.SandboxSpec) error {
+	return p.forkCheckpoint(ctx, dir, spec)
 }
 
 // CaptureCut is a fork cut after its capture and before it ran the source on, which a test cannot cut inside Fork.

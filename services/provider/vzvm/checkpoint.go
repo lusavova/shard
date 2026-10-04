@@ -29,7 +29,7 @@ func (p *Provider) Pause(ctx context.Context, id string, dir string) error {
 	if r.Paused {
 		return p.finishPause(ctx, id, stateDir, dir)
 	}
-	m, r, err := p.snapshotSource(ctx, id, models.VerbPause)
+	m, r, err := p.checkpointSource(ctx, id, models.VerbPause)
 	if err != nil {
 		return err
 	}
@@ -56,10 +56,10 @@ func (p *Provider) Pause(ctx context.Context, id string, dir string) error {
 			return p.abandon(m, tmp, fmt.Errorf("pause sandbox %s: %w", id, err))
 		}
 	}
-	if err := stageSnapshot(m, r, models.VerbPause, stateDir, tmp); err != nil {
+	if err := stageCheckpoint(m, r, models.VerbPause, stateDir, tmp); err != nil {
 		return p.abandon(m, tmp, fmt.Errorf("sandbox %s: %w", id, err))
 	}
-	// The record says paused before the swap, so a crash between the two leaves a resume that installs the staged snapshot and ends the shim.
+	// The record says paused before the swap, so a crash between the two leaves a resume that installs the staged checkpoint and ends the shim.
 	r.Paused = true
 	r.Pauses++
 	if err := writeRecord(stateDir, r); err != nil {
@@ -72,12 +72,12 @@ func (p *Provider) Pause(ctx context.Context, id string, dir string) error {
 		return p.abandon(m, tmp, errors.Join(fmt.Errorf("install the checkpoint of sandbox %s: %w", id, err), writeRecord(stateDir, r)))
 	}
 
-	// The install left the snapshot it replaced at tmp, which this pause owns and drops.
+	// The install left the checkpoint it replaced at tmp, which this pause owns and drops.
 	return errors.Join(os.RemoveAll(tmp), p.end(ctx, m))
 }
 
-// snapshotSource answers the shim of a running sandbox a save for verb can be taken of, and refuses any other.
-func (p *Provider) snapshotSource(ctx context.Context, id, verb string) (*machine, record, error) {
+// checkpointSource answers the shim of a running sandbox a save for verb can be taken of, and refuses any other.
+func (p *Provider) checkpointSource(ctx context.Context, id, verb string) (*machine, record, error) {
 	stateDir, r, err := p.open(id)
 	if err != nil {
 		return nil, record{}, err
@@ -100,12 +100,12 @@ func (p *Provider) snapshotSource(ctx context.Context, id, verb string) (*machin
 	return m, r, nil
 }
 
-// finishPause installs what a crashed pause staged, proves a snapshot is in place and ends the shim it left.
+// finishPause installs what a crashed pause staged, proves a checkpoint is in place and ends the shim it left.
 func (p *Provider) finishPause(ctx context.Context, id, stateDir, dir string) error {
 	if err := installStaged(dir); err != nil {
 		return fmt.Errorf("sandbox %s: %w", id, err)
 	}
-	if _, err := readSnapshot(dir); err != nil {
+	if _, err := readCheckpoint(dir); err != nil {
 		return fmt.Errorf("sandbox %s is paused on %s: %w", id, Name, err)
 	}
 
@@ -140,21 +140,21 @@ func (p *Provider) endLeftover(ctx context.Context, id, stateDir string) error {
 	return p.end(ctx, &machine{id: id, dir: stateDir, client: client, shim: shim})
 }
 
-// stageSnapshot writes the save, the disk and the metadata into tmp and marks it complete; the VM is paused, so the disk is still.
-func stageSnapshot(m *machine, r record, verb, stateDir, tmp string) error {
+// stageCheckpoint writes the save, the disk and the metadata into tmp and marks it complete; the VM is paused, so the disk is still.
+func stageCheckpoint(m *machine, r record, verb, stateDir, tmp string) error {
 	// A save may reset every vsock stream of the guest, so the run after it dials the control stream again should the thaw find it gone.
 	m.resetBy = verb
-	if _, err := m.client.Save(filepath.Join(tmp, snapshotState)); err != nil {
+	if _, err := m.client.Save(filepath.Join(tmp, checkpointState)); err != nil {
 		return fmt.Errorf("save the vm: %w", err)
 	}
-	if _, err := bundle.CloneFile(filepath.Join(stateDir, diskFile), filepath.Join(tmp, snapshotDiskFile)); err != nil {
+	if _, err := bundle.CloneFile(filepath.Join(stateDir, diskFile), filepath.Join(tmp, checkpointDiskFile)); err != nil {
 		return fmt.Errorf("copy the disk: %w", err)
 	}
-	snap := snapshot{MachineID: r.MachineID, Pause: r.Pauses + 1, RootFS: r.RootFS, Resources: r.Resources, Run: r.Run}
-	if err := writeJSON(filepath.Join(tmp, snapshotFile), snap); err != nil {
+	snap := checkpoint{MachineID: r.MachineID, Pause: r.Pauses + 1, RootFS: r.RootFS, Resources: r.Resources, Run: r.Run}
+	if err := writeJSON(filepath.Join(tmp, checkpointMeta), snap); err != nil {
 		return err
 	}
-	// The marker is what the sandbox service takes as a complete snapshot after a restart of the daemon.
+	// The marker is what the sandbox service takes as a complete checkpoint after a restart of the daemon.
 	if err := os.WriteFile(filepath.Join(tmp, checkpointFile), nil, 0o600); err != nil {
 		return fmt.Errorf("mark the checkpoint complete: %w", err)
 	}
@@ -231,17 +231,17 @@ func (p *Provider) redial(m *machine, verb string) error {
 	}
 }
 
-// installStaged finishes a pause that crashed after its record: a staged snapshot newer than the one in dir goes in, an older one goes.
+// installStaged finishes a pause that crashed after its record: a staged checkpoint newer than the one in dir goes in, an older one goes.
 func installStaged(dir string) error {
 	tmp := dir + ".tmp"
-	staged, err := readSnapshot(tmp)
+	staged, err := readCheckpoint(tmp)
 	if errors.Is(err, fs.ErrNotExist) {
 		return os.RemoveAll(tmp)
 	}
 	if err != nil {
 		return err
 	}
-	current, err := readSnapshot(dir)
+	current, err := readCheckpoint(dir)
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
@@ -252,11 +252,11 @@ func installStaged(dir string) error {
 		return fmt.Errorf("install the staged checkpoint: %w", err)
 	}
 
-	// The install left the older snapshot at tmp, which no resume and no fork reads again.
+	// The install left the older checkpoint at tmp, which no resume and no fork reads again.
 	return os.RemoveAll(tmp)
 }
 
-// Resume restores the save in dir over the sandbox's own disk, which the snapshot's copy replaces first.
+// Resume restores the save in dir over the sandbox's own disk, which the checkpoint's copy replaces first.
 func (p *Provider) Resume(ctx context.Context, id string, dir string) error {
 	if !p.cfg.SaveRestore {
 		return models.Unsupported(Name, models.VerbResume)
@@ -271,7 +271,7 @@ func (p *Provider) Resume(ctx context.Context, id string, dir string) error {
 	if err := installStaged(dir); err != nil {
 		return fmt.Errorf("sandbox %s: %w", id, err)
 	}
-	snap, err := readSnapshot(dir)
+	snap, err := readCheckpoint(dir)
 	if err != nil {
 		return err
 	}
@@ -286,7 +286,7 @@ func (p *Provider) Resume(ctx context.Context, id string, dir string) error {
 		if err := os.Remove(disk); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("drop the disk of sandbox %s: %w", id, err)
 		}
-		if _, err := bundle.CloneFile(filepath.Join(dir, snapshotDiskFile), disk); err != nil {
+		if _, err := bundle.CloneFile(filepath.Join(dir, checkpointDiskFile), disk); err != nil {
 			return fmt.Errorf("restore the disk of sandbox %s: %w", id, err)
 		}
 
@@ -296,7 +296,7 @@ func (p *Provider) Resume(ctx context.Context, id string, dir string) error {
 	}
 
 	r.MachineID = snap.MachineID
-	m, err := p.boot(ctx, id, stateDir, r, filepath.Join(dir, snapshotState))
+	m, err := p.boot(ctx, id, stateDir, r, filepath.Join(dir, checkpointState))
 	if err != nil {
 		return err
 	}
@@ -309,7 +309,7 @@ func (p *Provider) Resume(ctx context.Context, id string, dir string) error {
 	return nil
 }
 
-// AdoptStaging keeps the snapshot staging a cut pause left: a resume finishes it through installStaged, so dropping it would discard a saved VM (SHARD-404).
+// AdoptStaging keeps the checkpoint staging a cut pause left: a resume finishes it through installStaged, so dropping it would discard a saved VM (SHARD-404).
 func (p *Provider) AdoptStaging(string) error { return nil }
 
 // Fork captures the running source into the new sandbox's directory, runs the source on, and restores the capture as the fork.
@@ -335,7 +335,7 @@ func (p *Provider) Fork(ctx context.Context, source string, spec models.SandboxS
 	}
 
 	// The fork's disk is a clone of the capture's and its memory is restored, so the capture is spent.
-	return errors.Join(p.forkSnapshot(ctx, capture, spec), os.RemoveAll(capture))
+	return errors.Join(p.forkCheckpoint(ctx, capture, spec), os.RemoveAll(capture))
 }
 
 // capture stages the running source's save in dir, then runs the source on, whatever the capture came to.
@@ -353,7 +353,7 @@ func (p *Provider) capture(ctx context.Context, id, dir string) error {
 
 // hold stops the source over a frozen root and stages its save in dir; a machine it answers must run again, error or not.
 func (p *Provider) hold(ctx context.Context, id, dir string) (*machine, error) {
-	m, r, err := p.snapshotSource(ctx, id, models.VerbFork)
+	m, r, err := p.checkpointSource(ctx, id, models.VerbFork)
 	if err != nil {
 		return nil, err
 	}
@@ -367,15 +367,15 @@ func (p *Provider) hold(ctx context.Context, id, dir string) (*machine, error) {
 	if _, err := m.client.Pause(); err != nil {
 		return m, fmt.Errorf("pause sandbox %s for the capture: %w", id, err)
 	}
-	if err := stageSnapshot(m, r, models.VerbFork, m.dir, dir); err != nil {
+	if err := stageCheckpoint(m, r, models.VerbFork, m.dir, dir); err != nil {
 		return m, fmt.Errorf("sandbox %s: %w", id, err)
 	}
 
 	return m, nil
 }
 
-// forkSnapshot restores the save in dir as a new sandbox under the spec's id and address, and leaves the source as it was.
-func (p *Provider) forkSnapshot(ctx context.Context, dir string, spec models.SandboxSpec) error {
+// forkCheckpoint restores the save in dir as a new sandbox under the spec's id and address, and leaves the source as it was.
+func (p *Provider) forkCheckpoint(ctx context.Context, dir string, spec models.SandboxSpec) error {
 	if !p.cfg.SaveRestore {
 		return models.Unsupported(Name, models.VerbFork)
 	}
@@ -387,7 +387,7 @@ func (p *Provider) forkSnapshot(ctx context.Context, dir string, spec models.San
 	if status.Alive() {
 		return fmt.Errorf("sandbox %s already exists on %s and is %s", spec.ID, Name, status.State)
 	}
-	snap, err := readSnapshot(dir)
+	snap, err := readCheckpoint(dir)
 	if err != nil {
 		return err
 	}
@@ -395,7 +395,7 @@ func (p *Provider) forkSnapshot(ctx context.Context, dir string, spec models.San
 	if err := clear(spec.StateDir); err != nil {
 		return err
 	}
-	if err := cloneDisk(filepath.Join(dir, snapshotDiskFile), filepath.Join(spec.StateDir, diskFile)); err != nil {
+	if err := cloneDisk(filepath.Join(dir, checkpointDiskFile), filepath.Join(spec.StateDir, diskFile)); err != nil {
 		return fmt.Errorf("copy the checkpoint disk for sandbox %s on %s: %w", spec.ID, Name, err)
 	}
 
@@ -406,7 +406,7 @@ func (p *Provider) forkSnapshot(ctx context.Context, dir string, spec models.San
 		return err
 	}
 
-	m, err := p.boot(ctx, spec.ID, spec.StateDir, r, filepath.Join(dir, snapshotState))
+	m, err := p.boot(ctx, spec.ID, spec.StateDir, r, filepath.Join(dir, checkpointState))
 	if err != nil {
 		return errors.Join(err, os.Remove(filepath.Join(spec.StateDir, recordFile)))
 	}
@@ -417,18 +417,18 @@ func (p *Provider) forkSnapshot(ctx context.Context, dir string, spec models.San
 	return nil
 }
 
-func readSnapshot(dir string) (snapshot, error) {
+func readCheckpoint(dir string) (checkpoint, error) {
 	if _, err := os.Stat(filepath.Join(dir, checkpointFile)); err != nil {
-		return snapshot{}, fmt.Errorf("no complete checkpoint in %s: %w", dir, err)
+		return checkpoint{}, fmt.Errorf("no complete checkpoint in %s: %w", dir, err)
 	}
-	blob, err := os.ReadFile(filepath.Join(dir, snapshotFile))
+	blob, err := os.ReadFile(filepath.Join(dir, checkpointMeta))
 	if err != nil {
-		return snapshot{}, fmt.Errorf("read the checkpoint in %s: %w", dir, err)
+		return checkpoint{}, fmt.Errorf("read the checkpoint in %s: %w", dir, err)
 	}
 
-	var snap snapshot
+	var snap checkpoint
 	if err := json.Unmarshal(blob, &snap); err != nil {
-		return snapshot{}, fmt.Errorf("decode the checkpoint in %s: %w", dir, err)
+		return checkpoint{}, fmt.Errorf("decode the checkpoint in %s: %w", dir, err)
 	}
 
 	return snap, nil
