@@ -19,16 +19,9 @@ func TestEveryStubExitsThreeWithItsVerbAndNoStdout(t *testing.T) {
 		args []string
 		want string
 	}{
-		{[]string{"snapshot", "create", "web"}, "snapshot create"},
-		{[]string{"snapshot", "create", "--name", "base", "web"}, "snapshot create"},
-		{[]string{"snapshot", "list"}, "snapshot list"},
-		{[]string{"snapshot", "ls"}, "snapshot list"},
-		{[]string{"snapshot", "list", "--format", "json"}, "snapshot list"},
-		{[]string{"snapshot", "inspect", "base"}, "snapshot inspect"},
-		{[]string{"snapshot", "inspect", "--format", "table", "base"}, "snapshot inspect"},
-		{[]string{"snapshot", "remove", "base"}, "snapshot remove"},
-		{[]string{"snapshot", "rm", "base"}, "snapshot remove"},
-		{[]string{"create", "--snapshot", "base"}, "create --snapshot"},
+		{[]string{"snapshot", "list", "--format", "json"}, "snapshot list --format json"},
+		{[]string{"snapshot", "ls", "--format", "json"}, "snapshot list --format json"},
+		{[]string{"snapshot", "inspect", "--format", "table", "base"}, "snapshot inspect --format table"},
 		{[]string{"list", "--format", "json"}, "list --format json"},
 		{[]string{"ls", "--all", "--format", "json"}, "list --format json"},
 		{[]string{"inspect", "--format", "table", "web"}, "inspect --format table"},
@@ -68,14 +61,10 @@ func TestEveryStubExitsThreeWithItsVerbAndNoStdout(t *testing.T) {
 // A stub still refuses a usage it would refuse once it lands, with the exit of any other error.
 func TestAStubRefusesABadUsageBeforeItExitsThree(t *testing.T) {
 	for _, args := range [][]string{
-		{"snapshot", "create"},
-		{"snapshot", "list", "extra"},
-		{"snapshot", "inspect"},
-		{"snapshot", "remove"},
+		{"snapshot", "inspect", "--format", "table"},
 		{"snapshot", "create", "--name", "bad/name", "web"},
 		{"snapshot", "create", "--name", "", "web"},
 		{"list", "--format", "yaml"},
-		{"create", "--snapshot", "base", "alpine:3.20"},
 		{"tokens", "mint", "--format", "table"},
 		{"tokens", "mint", "--name", "ci", "--duration", "-1h", "--format", "table"},
 		{"tokens", "mint", "--name", "ci", "--scopes", "nope", "--format", "table"},
