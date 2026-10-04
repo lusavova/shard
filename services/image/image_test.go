@@ -199,6 +199,13 @@ func newService(t *testing.T, server *httptest.Server) *image.Service {
 func newServiceAt(t *testing.T, root string, server *httptest.Server, opts ...image.Option) *image.Service {
 	t.Helper()
 
+	// A config.json of {}: a directory without one sends the keychain on to the host's REGISTRY_AUTH_FILE and Podman auth.
+	dockerConfig := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dockerConfig, "config.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DOCKER_CONFIG", dockerConfig)
+
 	if server != nil {
 		opts = append(opts, image.WithRegistry(registry.WithTransport(server.Client().Transport), registry.WithInsecureRegistries(hostOf(t, server))))
 	}
