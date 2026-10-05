@@ -46,6 +46,8 @@ stateDiagram-v2
 | `paused` | `stopped` | `stop`, or a restart that finds no checkpoint | yes |
 | `stopped` | `running` | `start` | yes |
 
+vz supports pause and resume on Apple silicon with macOS 14 or later.
+
 ## What the picture does not say
 
 **A create begins `pending`, and the daemon finishes it in the background.** `shard create` writes
@@ -133,14 +135,14 @@ orchestrator built again first. `runsc` never starts a stopped container, so on 
 itself removes the old container and creates a new one over the same bundle (SHARD-24).
 
 **`created --> stopped` is a legal move that nothing reaches, and it would leave nothing on the
-substrate.** On the substrate, stopping a sandbox whose entrypoint never ran is a delete, because a
-runtime refuses to signal a container that never started. The record then says `stopped` while
-`Provider.Status` reports `Exists: false`. This answer is intended, because the record is what
-survives and `Status` only ever reports what the substrate says now. A paused sandbox is the second
-case. Its record says `paused` and `Status` reports `Exists: false`, because the pause deleted the
-sandbox from the substrate and only the checkpoint holds it. A `pause` also kills any `exec` in
-flight. An `exec` that a pause keeps from starting, at any layer, is refused with `sandbox <id> is
-paused: resume it with shard resume <id>`, the text a paused record gives.
+substrate on gVisor.** On gVisor, stopping a sandbox whose entrypoint never ran is a delete,
+because the runtime refuses to signal a sandbox that never started. The record then says `stopped`
+while `Provider.Status` reports `Exists: false`. This answer is intended, because the record is
+what survives and `Status` reports what the substrate says now. After a pause, gVisor likewise
+reports `Exists: false`, because only the checkpoint holds the sandbox. vz retains `vm.json` and
+reports `Exists: true` with `State: stopped`, although the shard record says `paused`. A `pause`
+also kills any `exec` in flight. An `exec` that a pause keeps from starting, at any layer, is refused
+with `sandbox <id> is paused: resume it with shard resume <id>`, the text a paused record gives.
 
 **There is no `checkpointed` state.** `pause` writes a checkpoint to disk and frees the memory, so a
 paused sandbox holds no RAM. There is no in-memory pause to tell it apart from, so `paused` is the
