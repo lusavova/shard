@@ -615,16 +615,24 @@ func TestUpgradeLeavesAnInactiveServiceStopped(t *testing.T) {
 	}
 }
 
+// The commands the refusal names reach the daemon: on Linux its socket is root's, so they carry sudo. (SHARD-675)
 func TestUninstallRefusesWhileASandboxRemains(t *testing.T) {
-	tests := []struct {
+	for _, tt := range []struct {
 		name string
+		os   string
 		ids  []string
+		left string
 		want []string
 	}{
-		{"one", []string{"sb_1"}, []string{"1 sandbox left", "Shard has 1 sandbox on this machine.", "Remove it before you uninstall Shard:"}},
-		{"two", []string{"sb_1", "sb_2"}, []string{"2 sandboxes left", "Shard has 2 sandboxes on this machine.", "Remove them before you uninstall Shard:"}},
-	}
-	for _, tt := range tests {
+		{"one on linux", "linux", []string{"sb_1"}, "1 sandbox left", []string{
+			"Shard has 1 sandbox on this machine.", "Remove it before you uninstall Shard:",
+			"    sudo shard list --all", "    sudo shard remove --force <name>",
+		}},
+		{"two on darwin", "darwin", []string{"sb_1", "sb_2"}, "2 sandboxes left", []string{
+			"Shard has 2 sandboxes on this machine.", "Remove them before you uninstall Shard:",
+			"    shard list --all", "    shard remove --force <name>",
+		}},
+	} {
 		t.Run(tt.name, func(t *testing.T) {
 			f := newFakeHost(t)
 			m := linuxInstall("v0.1.0")
@@ -634,12 +642,18 @@ func TestUninstallRefusesWhileASandboxRemains(t *testing.T) {
 			}
 			f.write(t, "/var/lib/shard/images/sb_3/sandbox.json", "{}")
 			ui := &fakeUI{}
+			h := f.host(nil)
+			h.OS = tt.os
 
-			err := (&Setup{Host: f.host(nil), UI: ui}).uninstall(t.Context(), m)
-			if err == nil || !strings.Contains(err.Error(), tt.want[0]) {
-				t.Fatalf("uninstall = %v, want %q", err, tt.want[0])
+			err := (&Setup{Host: h, UI: ui}).uninstall(t.Context(), m)
+			if err == nil || !strings.Contains(err.Error(), tt.left) {
+				t.Fatalf("uninstall = %v, want %q", err, tt.left)
 			}
-			said(t, ui, tt.want[1], tt.want[2], "shard list --all", "shard remove --force <name>")
+			for _, line := range tt.want {
+				if !slices.Contains(ui.printed, line) {
+					t.Errorf("output %q lacks the line %q", ui.printed, line)
+				}
+			}
 			if _, ok := f.read(t, "/usr/local/bin/shard"); !ok || len(ui.asked) != 0 {
 				t.Fatalf("uninstall removed a file or asked %v while a sandbox remains", ui.asked)
 			}
