@@ -75,11 +75,19 @@ its copy on to `running` with no point in between where an operator can stop it.
 verb except `get` and `remove`. The refusal is `409 sandbox_failed` with the reason, so an operator can
 read why the create failed and then remove the sandbox. A gVisor `pause` that broke off after its
 checkpoint began also lands here. The sentry exits after any checkpoint, so nothing is left to thaw.
-When the daemon restarts while a create is still in flight, it finds the `pending` record with
-nothing behind it. It moves that record to `failed` too, because a create the daemon dropped never
-finished. A `created` record at a restart is a fork the daemon dropped, so it also ends in
-`failed`. The daemon first stops a copy that still runs and tears down its substrate, because a
-restore that the old daemon started can still run where the runtime cannot see it.
+When the daemon restarts while a create is still in flight, it moves the `pending` record to
+`failed` too, because a create the daemon dropped never finished. Only a start that took, over a
+record that holds its network, makes the record `running`. The daemon first stops a sandbox the
+start never reached, or one whose record holds no address, because no egress rule knows it. Every
+create leases its address before its start, so a `running` record with no address is such a create
+that an older daemon called running, and it ends `failed` the same way. So does a `running` record
+over a container whose start never ran. A `stopped` record over such a container is a start the
+daemon dropped: the daemon ends the container and the record stays `stopped`, so the next `start`
+builds a fresh one. If the daemon cannot stop a sandbox that runs with no address, it refuses to
+start, rather than serve beside a sandbox no egress rule guards. A `created` record at a
+restart is a fork the daemon dropped, so it also ends in `failed`. The daemon first stops a copy
+that still runs and tears down its substrate, because a restore that the old daemon started can
+still run where the runtime cannot see it.
 
 **A sandbox outlives its entrypoint, so the entrypoint exiting is not a transition.** `running`
 means that the sandbox is up. It does not mean that a workload executes in it. A sandbox created
