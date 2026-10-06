@@ -291,6 +291,37 @@ func TestTransportExecNotStartedReports127(t *testing.T) {
 	}
 }
 
+// SHARD-764: an exec on runc before 1.2 inherits the daemon's umask, 0077 under setup's unit.
+func TestTransportExecStartsAtUmask0022WhateverTheHostGave(t *testing.T) {
+	old := syscall.Umask(0o077)
+	t.Cleanup(func() { syscall.Umask(old) })
+	_, dial := startTransport(t)
+	ctx := testContext(t)
+	c, err := supervisor.Connect(ctx, dial)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer c.Close()
+	if err := c.Run(ctx, supervisor.RunSpec{}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	stdoutR, stdoutW, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	exit, err := supervisor.Exec(ctx, dial, "sb", supervisor.ExecHeader{Argv: []string{"/bin/sh", "-c", "umask"}}, models.ExecSpec{Stdout: stdoutW})
+	if err != nil {
+		t.Fatalf("exec: %v", err)
+	}
+	_ = stdoutW.Close()
+	var stdout bytes.Buffer
+	_, _ = stdout.ReadFrom(stdoutR)
+	if exit.Code != 0 || stdout.String() != "0022\n" {
+		t.Fatalf("exit %+v, umask %q, want 0 and 0022", exit, stdout.String())
+	}
+}
+
 // docker run -w makes a missing work directory, with no command as with one, since every exec defaults to it (SHARD-757).
 func TestTransportARunMakesItsWorkDirectory(t *testing.T) {
 	for name, argv := range map[string][]string{"no command": nil, "a command": childArgv("sleep:60000")} {

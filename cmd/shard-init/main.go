@@ -30,7 +30,7 @@ import (
 const usage = `shard-init - the guest supervisor, PID 1 inside a sandbox
 
 Usage:
-  shard-init -ready-file <path> [-user <uid>:<gid>] [-groups <gid>,...]
+  shard-init -ready-file <path> [-user <uid>:<gid>] [-groups <gid>,...] [-workdir <dir>]
              [-restart no|on-failure|always] [-retries <n>] [-backoff <duration>] -- [<entrypoint> [args...]]
   shard-init -transport vsock [-root <device> | -base <device> -overlay <device>] [-console <device>] [-reboot]
 
@@ -50,6 +50,8 @@ var errNoEntrypoint = errors.New("the entrypoint did not start")
 var errNoHost = errors.New("no host attached")
 
 func init() {
+	// runc before 1.2 hands an exec the daemon's umask, 0077 under setup's unit, so every process here starts from docker's 0022 (SHARD-764).
+	syscall.Umask(0o022)
 	// The host traces the launch shim's main thread alone, and the relay's command dies with the thread that forked it.
 	if len(os.Args) > 1 && (os.Args[1] == launch.Mode || os.Args[1] == termrelay.Mode) {
 		runtime.LockOSThread()
@@ -130,6 +132,7 @@ func run(args []string) error {
 	readyFile := flags.String("ready-file", "", "file written once the entrypoint is forked")
 	user := flags.String("user", "", "uid:gid the entrypoint drops to; the supervisor keeps its own ids")
 	groups := flags.String("groups", "", "comma separated supplementary gids the entrypoint is given")
+	workDir := flags.String("workdir", "", "the directory the entrypoint and every exec start in, made 0755 if it is missing")
 	policy := flags.String("restart", string(models.RestartNo), "when the entrypoint is started again: no, on-failure or always")
 	retries := flags.Int("retries", 0, "how many starts again before the supervisor gives up, 0 for unlimited")
 	backoff := flags.Duration("backoff", defaultBackoff, "the wait before the first start again; it doubles each time, up to a minute")
@@ -149,8 +152,8 @@ func run(args []string) error {
 		return err
 	}
 	if *transport != "" {
-		if flags.NArg() != 0 || *readyFile != "" {
-			return errors.New("-transport takes the entrypoint from the host, so no -ready-file or arguments")
+		if flags.NArg() != 0 || *readyFile != "" || *workDir != "" {
+			return errors.New("-transport takes the entrypoint from the host, so no -ready-file, -workdir or arguments")
 		}
 
 		return serveTransport(*transport, boot)
@@ -174,7 +177,7 @@ func run(args []string) error {
 		return err
 	}
 	g := newGuest(&fileReporter{readyFile: *readyFile}, restart)
-	err = g.launch(entrypoint{argv: flags.Args(), env: os.Environ(), credential: credential})
+	err = g.launch(entrypoint{argv: flags.Args(), env: os.Environ(), dir: *workDir, credential: credential})
 	if errors.Is(err, errNoEntrypoint) {
 		return errors.Join(err, reportNotStarted(err))
 	}

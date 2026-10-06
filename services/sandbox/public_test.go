@@ -198,6 +198,23 @@ func TestACreateRefusesAUserTheImageDoesNotList(t *testing.T) {
 	}
 }
 
+// SHARD-766: a fronted create on an image with no CA bundle names the image and the fix, never the rootfs path.
+func TestACreateRefusesAnImageWithNoCABundle(t *testing.T) {
+	cause := fmt.Errorf("sandbox sandbox1: the image rootfs /var/lib/shard/rootfs/sha256-0a1b has %w to add the proxy CA to", bundle.ErrNoCABundle)
+	svc, l := newService(t, &recorder{}, models.Sandbox{}, func(c *sandbox.Config) {
+		c.Provider = &createProvider{Provider: c.Provider, err: cause}
+	})
+
+	_, err := svc.Create(t.Context(), alpine())
+
+	if public, ok := sandbox.PublicText(err); !ok || public != noRootsText {
+		t.Fatalf("create = %v, want the public text %q", err, noRootsText)
+	}
+	if sb := l.repo.sb; sb.State != models.StateFailed || sb.FailedPublic != noRootsText || !strings.Contains(sb.FailedReason, "/var/lib/shard/rootfs") {
+		t.Errorf("the record is %s with public reason %q and reason %q, want failed with the image named and the path kept for the daemon", sb.State, sb.FailedPublic, sb.FailedReason)
+	}
+}
+
 // A network the host refused names the binary and its reason, and a full pool names the verbs that free an address.
 func TestAFailedNetworkSetUpNamesItsCause(t *testing.T) {
 	cases := map[string]struct {
