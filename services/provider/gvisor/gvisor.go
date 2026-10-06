@@ -706,6 +706,10 @@ func execOptions(b bundle.Bundle, spec models.ExecSpec) (runsc.ExecOptions, erro
 	if err != nil {
 		return runsc.ExecOptions{}, err
 	}
+	// AddHome skips the passwd when HOME is set, so the refusal runc and Sysbox make up front is made here too.
+	if err := bundle.CheckPasswd(b.RootFS); err != nil {
+		return runsc.ExecOptions{}, err
+	}
 
 	opts := runsc.ExecOptions{
 		Bundle:  b.Dir,
@@ -730,6 +734,11 @@ func execOptions(b bundle.Bundle, spec models.ExecSpec) (runsc.ExecOptions, erro
 		}
 		opts.User = fmt.Sprintf("%d:%d", identity.UID, identity.GID)
 		opts.Groups = identity.Groups
+	}
+
+	opts.Env, err = bundle.AddHome(b.RootFS, opts.User, opts.Env)
+	if err != nil {
+		return runsc.ExecOptions{}, err
 	}
 
 	return opts, nil
