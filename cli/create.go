@@ -51,7 +51,7 @@ func (a App) printCreated(sb client.Sandbox) error {
 func (a App) createAndWait(ctx context.Context, c *client.Client, req sandbox.CreateRequest) (client.Sandbox, error) {
 	sb, err := c.CreateSandboxAndWait(ctx, req, a.pullProgress())
 	if err != nil {
-		return client.Sandbox{}, inFlags(err, req)
+		return client.Sandbox{}, inFlags(err)
 	}
 	if sb.State == models.StateFailed {
 		return client.Sandbox{}, fmt.Errorf("sandbox %s failed to start: %s", sandboxName(sb), sb.FailedReason)
@@ -66,8 +66,8 @@ func sandboxName(sb client.Sandbox) string { return cmp.Or(sb.Name, sb.ID) }
 // resourceFlags names each resources field of the API as the flag that sets it.
 var resourceFlags = strings.NewReplacer("resources.memory_mib", "--memory", "resources.vcpus", "--vcpus", "resources.disk_mib", "--disk")
 
-// inFlags words a refusal of the request's resources in the flags the operator typed, and shows --memory to one who typed none.
-func inFlags(err error, req sandbox.CreateRequest) error {
+// inFlags words a refusal of the request's resources in the flags the operator typed.
+func inFlags(err error) error {
 	var refused *client.APIError
 	if !errors.As(err, &refused) || refused.Code != models.CodeInvalidRequest {
 		return err
@@ -76,9 +76,6 @@ func inFlags(err error, req sandbox.CreateRequest) error {
 	message := resourceFlags.Replace(refused.Message)
 	if message == refused.Message {
 		return err
-	}
-	if req.Resources.MemoryMiB == nil && strings.Contains(message, "--memory") {
-		message += ", for example --memory 512MiB"
 	}
 	worded := *refused
 	worded.Message = message
