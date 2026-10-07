@@ -12,6 +12,7 @@ import (
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/client"
+	"github.com/presmihaylov/shard/services/sandbox"
 )
 
 // listOptions is one parsed shard list invocation.
@@ -41,7 +42,10 @@ func (a App) list(ctx context.Context, args []string) error {
 	}
 	shown := result.Sandboxes
 	if !opts.all {
-		shown = slices.DeleteFunc(slices.Clone(shown), func(sb client.Sandbox) bool { return sb.State == models.StateStopped })
+		// A start the daemon owes after an OOM kill keeps the sandbox in view, as the daemon's own list does.
+		shown = slices.DeleteFunc(slices.Clone(shown), func(sb client.Sandbox) bool {
+			return sb.State == models.StateStopped && (sb.OOM == nil || sb.OOM.RestartAt.IsZero())
+		})
 	}
 
 	// The daemon answers with both: the sandboxes it read are printed, and the ones it could not are the exit.
@@ -106,7 +110,7 @@ func writeTable(w io.Writer, sandboxes []client.Sandbox, now time.Time) error {
 	fmt.Fprintln(tw, "ID\tNAME\tIMAGE\tSTATE\tUPTIME\tRESTART\tPOLICY")
 
 	for _, sb := range sandboxes {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", sb.ID, orDash(sb.Name), sb.Image, state(sb), uptime(sb, now), restart(sb), orDash(sb.Policy))
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", sb.ID, orDash(sb.Name), sb.Image, state(sb, now), uptime(sb, now), restart(sb), orDash(sb.Policy))
 	}
 
 	if err := tw.Flush(); err != nil {
@@ -116,17 +120,41 @@ func writeTable(w io.Writer, sandboxes []client.Sandbox, now time.Time) error {
 	return nil
 }
 
-// state carries the reason a sandbox nobody stopped is stopped, or the exit of an entrypoint whose
-// still-running sandbox outlived it, which is the one an operator asks about.
-func state(sb client.Sandbox) string {
+// state adds why a sandbox nobody stopped is stopped, an entrypoint exit it outlived, and the memory kills it was started again after.
+func state(sb client.Sandbox, now time.Time) string {
+	var notes []string
 	if sb.State == models.StateRunning && sb.ExitStatus != nil {
-		return fmt.Sprintf("%s (exited %d)", sb.State, sb.ExitStatus.Code)
+		notes = append(notes, fmt.Sprintf("exited %d", sb.ExitStatus.Code))
 	}
-	if sb.StoppedReason != "" {
-		return fmt.Sprintf("%s (%s)", sb.State, sb.StoppedReason)
+	// The kill count says the memory ran out, so the reason would say it twice.
+	if sb.StoppedReason != "" && (sb.OOM == nil || sb.StoppedReason != sandbox.OOMKilledReason) {
+		notes = append(notes, sb.StoppedReason)
+	}
+	if sb.OOM != nil {
+		notes = append(notes, outOfMemory(*sb.OOM, now))
+	}
+	if len(notes) == 0 {
+		return string(sb.State)
 	}
 
-	return string(sb.State)
+	return fmt.Sprintf("%s (%s)", sb.State, strings.Join(notes, "; "))
+}
+
+// outOfMemory counts the kills, and says when the daemon starts the sandbox again if it still owes that.
+func outOfMemory(oom client.OOM, now time.Time) string {
+	times := fmt.Sprintf("%d times", oom.Kills)
+	if oom.Kills == 1 {
+		times = "once"
+	}
+	note := "ran out of memory " + times
+	if oom.RestartAt.IsZero() {
+		return note
+	}
+	if !oom.RestartAt.After(now) {
+		return note + ", starts again now"
+	}
+
+	return note + ", starts again in " + short(oom.RestartAt.Sub(now).Round(time.Second))
 }
 
 // restart is the entrypoint policy the sandbox asked for, and how much of its cap has been spent on it.

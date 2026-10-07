@@ -425,6 +425,7 @@ A create that names secrets also needs the secret:\* scope, one that names a pol
 | `image` | string | yes |  |
 | `kernel` | string | no |  |
 | `name` | string | no |  |
+| `oom` | [OOM](#oom) | no |  |
 | `policy` | string | no |  |
 | `ports` | array of [PortForward](#portforward) | no |  |
 | `provider` | string | yes |  |
@@ -435,6 +436,14 @@ A create that names secrets also needs the secret:\* scope, one that names a pol
 | `started_at` | string (date-time) | no |  |
 | `state` | string | yes | One of `pending`, `created`, `running`, `paused`, `unresponsive`, `stopped`, `failed`. |
 | `stopped_reason` | string | no |  |
+
+### OOM
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `killed_at` | string (date-time) | yes | When the host last ended the sandbox for its memory. |
+| `kills` | integer (int64) | yes | Every time the host ended the sandbox for its memory. At least 1. |
+| `restart_at` | string (date-time) | no | When the daemon starts the sandbox again; absent once a start ran or a stop called it off. |
 
 ### PolicyAttachRequest
 
@@ -500,6 +509,7 @@ A create that names secrets also needs the secret:\* scope, one that names a pol
 | `image` | string | yes |  |
 | `kernel` | string | no |  |
 | `name` | string | no |  |
+| `oom` | [OOM](#oom) | no |  |
 | `policy` | string | no |  |
 | `ports` | array of [PortForward](#portforward) | no |  |
 | `provider` | string | yes |  |

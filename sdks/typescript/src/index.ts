@@ -11,6 +11,7 @@ export type {
   EgressDecision,
   ExitStatus,
   HostAddress,
+  OOMInfo,
   Policy,
   PolicyRule,
   Port,
