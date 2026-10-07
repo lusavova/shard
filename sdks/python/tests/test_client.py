@@ -41,7 +41,7 @@ SANDBOX: dict[str, Any] = {
     "image": "docker.io/library/alpine:3",
     "provider": "gvisor",
     "state": "running",
-    "resources": {"memory_mib": 512, "vcpus": 1, "disk_mib": 0},
+    "resources": {"memory_mib": 512, "vcpus": 1, "disk_mib": 0, "swap_mib": 0},
     "created_at": "2026-10-04T10:00:00Z",
 }
 RULE = {
@@ -195,6 +195,7 @@ def test_capabilities(daemon: FakeDaemon, shard: Shard) -> None:
         "fork": False,
         "snapshot": True,
         "port": True,
+        "swap": False,
     }
     daemon.routes[("GET", "/v0/capabilities")] = (200, verbs)
     assert shard.capabilities() == Capabilities(**verbs)
@@ -203,7 +204,9 @@ def test_capabilities(daemon: FakeDaemon, shard: Shard) -> None:
 def test_create_and_run_bodies(daemon: FakeDaemon, shard: Shard) -> None:
     daemon.routes[("POST", "/v0/sandboxes")] = (201, SANDBOX)
     assert shard.create("alpine:3", name="web", env={"MODE": "test"}, secrets=["TOKEN"]).id == "sb"
-    app = shard.run("alpine:3", "sleep 1", memory_mib=0, restart=Restart(policy="on-failure", retries=3, backoff=2))
+    app = shard.run(
+        "alpine:3", "sleep 1", memory_mib=0, swap_mib=0, restart=Restart(policy="on-failure", retries=3, backoff=2)
+    )
     assert app.sandbox.id == "sb"
     assert [json.loads(body) for _, _, body in daemon.requests] == [
         {
@@ -216,7 +219,7 @@ def test_create_and_run_bodies(daemon: FakeDaemon, shard: Shard) -> None:
         {
             "image": "alpine:3",
             "command": ["/bin/sh", "-c", "sleep 1"],
-            "resources": {"vcpus": 0, "disk_mib": 0, "memory_mib": 0},
+            "resources": {"vcpus": 0, "disk_mib": 0, "memory_mib": 0, "swap_mib": 0},
             "restart": {"policy": "on-failure", "backoff": 2, "retries": 3},
         },
     ]

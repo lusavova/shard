@@ -93,6 +93,7 @@ class Shard:
         vcpus: int | None = None,
         disk_mib: int | None = None,
         ports: Sequence[PortForward] | None = None,
+        swap_mib: int | None = None,
     ) -> Sandbox:
         """create a sandbox"""
         body = create_body(
@@ -109,6 +110,7 @@ class Shard:
             vcpus=vcpus,
             disk_mib=disk_mib,
             ports=ports,
+            swap_mib=swap_mib,
             restart=None,
         )
         return Sandbox(self._transport, self._create(body))
@@ -128,6 +130,7 @@ class Shard:
         vcpus: int | None = None,
         disk_mib: int | None = None,
         ports: Sequence[PortForward] | None = None,
+        swap_mib: int | None = None,
         restart: Restart | None = None,
     ) -> App:
         """create a sandbox and start its command"""
@@ -145,6 +148,7 @@ class Shard:
             vcpus=vcpus,
             disk_mib=disk_mib,
             ports=ports,
+            swap_mib=swap_mib,
             restart=restart,
         )
         return App(self._transport, Sandbox(self._transport, self._create(body)))
@@ -185,7 +189,7 @@ class Shard:
         return [_types.port(record) for record in records]
 
     def capabilities(self) -> Capabilities:
-        """Return which of the nine lifecycle verbs the daemon's provider supports."""
+        """Return which of the nine lifecycle verbs the daemon's provider supports, and whether it gives swap."""
         return _types.capabilities(
             self._transport.answer(
                 models.Capabilities, lambda: get_capabilities.sync_detailed(client=self._transport.api)

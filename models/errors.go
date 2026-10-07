@@ -57,6 +57,7 @@ const (
 	VerbResume = "resume"
 	VerbFork   = "fork"
 	VerbPort   = "port"
+	VerbSwap   = "swap"
 )
 
 // UnsupportedError names the provider and the verb, because shard refuses rather than downgrades.
