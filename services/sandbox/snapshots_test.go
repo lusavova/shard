@@ -164,9 +164,6 @@ func TestCreateFromASnapshotSeedsTheLayerAndNeverPulls(t *testing.T) {
 	if l.provider.spec.Seed != files {
 		t.Errorf("the provider was seeded from %q, want the snapshot's files %s", l.provider.spec.Seed, files)
 	}
-	if len(l.provider.spec.Entrypoint) != 0 {
-		t.Errorf("the sandbox runs %v, want shard-init alone", l.provider.spec.Entrypoint)
-	}
 	if slices.Contains(r.calls, "images.Pull") || !slices.Contains(r.calls, "images.Lookup") {
 		t.Errorf("the calls were %v, want a lookup and no pull", r.calls)
 	}
@@ -176,8 +173,6 @@ func TestCreateRefusesARequestThatNamesAnImageAndASnapshot(t *testing.T) {
 	cases := map[string]sandbox.CreateRequest{
 		"both":    {Image: "alpine:3.20", Snapshot: "base"},
 		"neither": {},
-		"command": {Snapshot: "base", Command: []string{"echo", "1"}},
-		"restart": {Snapshot: "base", Restart: &models.RestartSpec{Policy: models.RestartOnFailure}},
 	}
 	for name, req := range cases {
 		r := &recorder{}

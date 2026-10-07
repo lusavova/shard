@@ -11,7 +11,6 @@ from ..types import UNSET, Unset
 if TYPE_CHECKING:
     from ..models.port_forward import PortForward
     from ..models.resource_request import ResourceRequest
-    from ..models.restart_spec import RestartSpec
 
 
 T = TypeVar("T", bound="CreateRequest")
@@ -19,14 +18,12 @@ T = TypeVar("T", bound="CreateRequest")
 
 @_attrs_define
 class CreateRequest:
-    command: list[str] | Unset = UNSET
     env: list[str] | Unset = UNSET
     image: str | Unset = UNSET
     name: str | Unset = UNSET
     policy: str | Unset = UNSET
     ports: list[PortForward] | Unset = UNSET
     resources: ResourceRequest | Unset = UNSET
-    restart: RestartSpec | Unset = UNSET
     secrets: list[str] | Unset = UNSET
     snapshot: str | Unset = UNSET
     user: str | Unset = UNSET
@@ -35,11 +32,6 @@ class CreateRequest:
     def to_dict(self) -> dict[str, Any]:
         from ..models.port_forward import PortForward  # noqa: PLC0415
         from ..models.resource_request import ResourceRequest  # noqa: PLC0415
-        from ..models.restart_spec import RestartSpec  # noqa: PLC0415
-
-        command: list[str] | Unset = UNSET
-        if not isinstance(self.command, Unset):
-            command = self.command
 
         env: list[str] | Unset = UNSET
         if not isinstance(self.env, Unset):
@@ -62,10 +54,6 @@ class CreateRequest:
         if not isinstance(self.resources, Unset):
             resources = self.resources.to_dict()
 
-        restart: dict[str, Any] | Unset = UNSET
-        if not isinstance(self.restart, Unset):
-            restart = self.restart.to_dict()
-
         secrets: list[str] | Unset = UNSET
         if not isinstance(self.secrets, Unset):
             secrets = self.secrets
@@ -79,8 +67,6 @@ class CreateRequest:
         field_dict: dict[str, Any] = {}
 
         field_dict.update({})
-        if command is not UNSET:
-            field_dict["command"] = command
         if env is not UNSET:
             field_dict["env"] = env
         if image is not UNSET:
@@ -93,8 +79,6 @@ class CreateRequest:
             field_dict["ports"] = ports
         if resources is not UNSET:
             field_dict["resources"] = resources
-        if restart is not UNSET:
-            field_dict["restart"] = restart
         if secrets is not UNSET:
             field_dict["secrets"] = secrets
         if snapshot is not UNSET:
@@ -110,11 +94,8 @@ class CreateRequest:
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.port_forward import PortForward  # noqa: PLC0415
         from ..models.resource_request import ResourceRequest  # noqa: PLC0415
-        from ..models.restart_spec import RestartSpec  # noqa: PLC0415
 
         d = dict(src_dict)
-        command = cast(list[str], d.pop("command", UNSET))
-
         env = cast(list[str], d.pop("env", UNSET))
 
         image = d.pop("image", UNSET)
@@ -139,13 +120,6 @@ class CreateRequest:
         else:
             resources = ResourceRequest.from_dict(_resources)
 
-        _restart = d.pop("restart", UNSET)
-        restart: RestartSpec | Unset
-        if isinstance(_restart, Unset):
-            restart = UNSET
-        else:
-            restart = RestartSpec.from_dict(_restart)
-
         secrets = cast(list[str], d.pop("secrets", UNSET))
 
         snapshot = d.pop("snapshot", UNSET)
@@ -155,14 +129,12 @@ class CreateRequest:
         workdir = d.pop("workdir", UNSET)
 
         create_request = cls(
-            command=command,
             env=env,
             image=image,
             name=name,
             policy=policy,
             ports=ports,
             resources=resources,
-            restart=restart,
             secrets=secrets,
             snapshot=snapshot,
             user=user,

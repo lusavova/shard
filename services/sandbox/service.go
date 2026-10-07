@@ -168,9 +168,8 @@ func New(cfg Config) *Service {
 // CreateRequest is what a create names. It is the JSON body of POST /v0/sandboxes.
 type CreateRequest struct {
 	Image    string   `json:"image,omitempty" doc:"The image to create from. A create names exactly one of image and snapshot."`
-	Snapshot string   `json:"snapshot,omitempty" doc:"The snapshot id or name to create from; it takes no command and no restart. A create names exactly one of image and snapshot."`
+	Snapshot string   `json:"snapshot,omitempty" doc:"The snapshot id or name to create from. A create names exactly one of image and snapshot."`
 	Name     string   `json:"name,omitempty"`
-	Command  []string `json:"command,omitempty"`
 	Env      []string `json:"env,omitempty"`
 	WorkDir  string   `json:"workdir,omitempty"`
 	User     string   `json:"user,omitempty"`
@@ -179,8 +178,6 @@ type CreateRequest struct {
 	// Policy is what the host enforces for the sandbox.
 	Policy    string          `json:"policy,omitempty"`
 	Resources ResourceRequest `json:"resources" required:"false"`
-	// Restart is when the supervisor starts the entrypoint again inside the sandbox, nil for never.
-	Restart *models.RestartSpec `json:"restart,omitempty"`
 	// Ports are the host ports forwarded into the sandbox from its first start, as port add would forward them.
 	Ports []models.PortForward `json:"ports,omitempty"`
 }
@@ -631,8 +628,6 @@ func (s *Service) Prepare(ctx context.Context, req CreateRequest) (models.Sandbo
 		Resources: res,
 		Secrets:   req.Secrets,
 		Policy:    req.Policy,
-		Command:   slices.Clone(req.Command),
-		Restart:   withRestartDefaults(req.Restart),
 		Ports:     byHostPort(req.Ports),
 		CreatedAt: time.Now().UTC(),
 	}, admit...)
@@ -824,21 +819,19 @@ func (s *Service) Complete(ctx context.Context, id string, req CreateRequest) (e
 	}
 
 	spec := runspec.Resolve(models.SandboxSpec{
-		ID:         id,
-		Name:       req.Name,
-		RootFS:     img.RootFS,
-		RootDisk:   img.Disk,
-		BaseDisk:   img.Erofs,
-		StateDir:   dir,
-		Entrypoint: req.Command,
-		Env:        env,
-		WorkDir:    req.WorkDir,
-		User:       req.User,
-		Network:    resolvedThrough(netSpec, req.Policy),
-		Resources:  s.resources(req.Resources),
-		Restart:    restartSpecOf(withRestartDefaults(req.Restart)),
-		Seed:       seed.files,
-		ProxyCA:    proxyCA,
+		ID:        id,
+		Name:      req.Name,
+		RootFS:    img.RootFS,
+		RootDisk:  img.Disk,
+		BaseDisk:  img.Erofs,
+		StateDir:  dir,
+		Env:       env,
+		WorkDir:   req.WorkDir,
+		User:      req.User,
+		Network:   resolvedThrough(netSpec, req.Policy),
+		Resources: s.resources(req.Resources),
+		Seed:      seed.files,
+		ProxyCA:   proxyCA,
 	}, img.Config)
 
 	// Create rolls back its own mount only, and an interrupt can leave the sandbox process runsc
@@ -869,10 +862,10 @@ func (s *Service) Complete(ctx context.Context, id string, req CreateRequest) (e
 			return fmt.Errorf("the start of sandbox %s was interrupted, so it may be running and it stays on the host: %w", id, err)
 		}
 
-		return imageGone(nameOf(id, sb), sb.Image, img.Digest, "create", nameCommand(err, nameOf(id, sb), spec.Entrypoint))
+		return imageGone(nameOf(id, sb), sb.Image, img.Digest, "create", err)
 	}
 
-	// The commit point. The entrypoint is live, so nothing below this line gives anything back: only
+	// The commit point. shard-init is live, so nothing below this line gives anything back: only
 	// stop ends a sandbox.
 	td.Discard()
 	committed = true
@@ -900,47 +893,11 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (models.Sandbox
 		return models.Sandbox{}, err
 	}
 
-	if err := s.Settle(ctx, sb.ID, req); err != nil {
+	if err := s.Complete(ctx, sb.ID, req); err != nil {
 		return models.Sandbox{}, err
 	}
 
 	return s.record(sb.ID)
-}
-
-// discardBudget bounds the removal of a sandbox whose app never started, on a context its caller cannot cancel.
-const discardBudget = 30 * time.Second
-
-// Settle is Complete for a caller that waits on the outcome, so an app that never started leaves no sandbox behind its refusal.
-func (s *Service) Settle(ctx context.Context, id string, req CreateRequest) error {
-	err := s.Complete(ctx, id, req)
-	var refused *models.CommandNotStartedError
-	if !errors.As(err, &refused) {
-		return err
-	}
-
-	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), discardBudget)
-	defer cancel()
-	removeErr := s.Remove(cleanupCtx, id, true)
-	if removeErr == nil || errors.Is(removeErr, sandboxstate.ErrNotFound) {
-		return err
-	}
-
-	return &NotRemovedError{Refusal: refused, Err: removeErr}
-}
-
-// NotRemovedError is a refused app whose sandbox stayed; it unwraps to nothing, so no cause inside picks the code of what is a plain failure.
-type NotRemovedError struct {
-	Refusal *models.CommandNotStartedError
-	Err     error
-}
-
-func (e *NotRemovedError) Error() string {
-	return fmt.Sprintf("%s, and the sandbox was not removed: %s", e.Refusal, e.Err)
-}
-
-// Public names the refusal and the sandbox it left, never the removal's cause, which only the daemon log reads.
-func (e *NotRemovedError) Public() string {
-	return e.Refusal.Public() + ", and the sandbox was not removed"
 }
 
 // nameCommand gives a refused start the sandbox and the program as the user named them, which the provider does not know.
@@ -1013,9 +970,6 @@ func validate(req CreateRequest) error {
 	if req.Image != "" && req.Snapshot != "" {
 		return &RequestError{Err: errors.New("the request names both an image and a snapshot: a snapshot already names its image")}
 	}
-	if req.Snapshot != "" && (len(req.Command) != 0 || req.Restart != nil) {
-		return &RequestError{Err: errors.New("a sandbox from a snapshot cannot take command or restart; omit both fields")}
-	}
 
 	if req.Name != "" {
 		if err := sandboxstate.ValidName(req.Name); err != nil {
@@ -1047,11 +1001,6 @@ func validate(req CreateRequest) error {
 	}
 	if swap > MaxDiskMiB {
 		return &RequestError{Err: fmt.Errorf("the swap is in MiB and no host holds that much, got %d", swap)}
-	}
-	if req.Restart != nil {
-		if err := validRestart(*req.Restart, req.Command); err != nil {
-			return &RequestError{Err: err}
-		}
 	}
 	if err := validPorts(req.Ports); err != nil {
 		return err
@@ -1158,8 +1107,7 @@ func (s *Service) recordCreated(ctx context.Context, spec models.SandboxSpec, di
 	})
 }
 
-// Start runs a stopped sandbox again. Its address, its writable layer and its record all survived
-// the stop, so the provider builds the new run over them and the record loses only the old exit.
+// Start runs a stopped sandbox again over the address, writable layer and record the stop kept, and the processes a start brings back.
 func (s *Service) Start(ctx context.Context, ref string) (models.Sandbox, error) {
 	id, err := s.cfg.Repo.Resolve(ref)
 	if err != nil {
@@ -1191,6 +1139,20 @@ func (s *Service) Start(ctx context.Context, ref string) (models.Sandbox, error)
 	}
 	if err := s.openPorts(id); err != nil {
 		return models.Sandbox{}, err
+	}
+
+	// Only an operator's start lifts an operator's stop; a daemon start leaves it, as Docker's unless-stopped does.
+	err = s.cfg.Repo.Update(id, func(rec *models.Sandbox) error {
+		rec.StoppedByOperator = false
+
+		return nil
+	})
+	if err != nil {
+		return models.Sandbox{}, fmt.Errorf("sandbox %s is running but its record was not updated: %w", id, err)
+	}
+	// SHARD-790 (shard's ruling): the sandbox runs whatever its processes do, so a failed one is recorded and reported, not answered.
+	if err := s.launch(ctx, id, operatorStart, nil); err != nil {
+		s.report(fmt.Sprintf("sandbox %s: %v", nameOf(id, sb), err))
 	}
 
 	return s.record(id)
@@ -1326,11 +1288,16 @@ func (s *Service) stop(ctx context.Context, id string, force bool) error {
 
 			return s.dropCheckpoint(id)
 		case sb.State == models.StateStopped && !status.Alive():
-			// A second stop changes nothing but the checkpoint, which an earlier stop's failed drop leaves behind (SHARD-592).
+			// A second stop changes nothing but the mark and the checkpoint, which an earlier stop's failed drop leaves behind (SHARD-592).
+			if err := s.cfg.Repo.Update(id, byOperator); err != nil {
+				return err
+			}
+
 			return s.dropCheckpoint(id)
 		}
 	}
 
+	// The table is read only after the stop, so a guest whose table the host lost still stops.
 	if err := s.cfg.Provider.Stop(ctx, id, models.StopGrace); err != nil {
 		return err
 	}
@@ -1343,16 +1310,8 @@ func (s *Service) stop(ctx context.Context, id string, force bool) error {
 	// A stop takes the sandbox's execs with it: their buffers go and their commands end.
 	s.dropExecs(id)
 
-	// The liveness task may have recorded the exit already; only a still-running entrypoint needs a wait.
-	exit := sb.ExitStatus
-	if exit == nil {
-		exit, err = s.lastExit(ctx, id)
-		if err != nil {
-			return err
-		}
-	}
-	// The count is read once the run is over, so a start again between two ticks never goes unrecorded.
-	restarts, err := s.lastRestarts(ctx, sb)
+	// The table is a file the stop leaves behind, so it says how each process went down.
+	after, _, err := s.table(ctx, id)
 	if err != nil {
 		return err
 	}
@@ -1364,18 +1323,12 @@ func (s *Service) stop(ctx context.Context, id string, force bool) error {
 		callOffOOMRestart(sb)
 		// A stop ends the sandbox, so no resume can read its checkpoint again (SHARD-592).
 		sb.Checkpoint = ""
-		if exit != nil {
-			sb.ExitStatus = exit
-		}
-		// shard-init died on the way down, so its 125 outranks an entrypoint exit the record already took.
+		sb.Processes = endProcesses(merged(sb.Processes, after))
 		if status.SupervisorFailed != "" {
 			supervisorFailed(sb, status.SupervisorFailed)
 		}
-		if sb.Restart != nil {
-			sb.Restart.RestartCount = restarts
-		}
 
-		return nil
+		return byOperator(sb)
 	})
 	if err != nil {
 		return err
@@ -1425,18 +1378,11 @@ func (s *Service) awaitStopped(ctx context.Context, id string) (models.Status, e
 	}
 }
 
-// lastExit reads how the entrypoint ended, once the sandbox is already stopped. A sandbox the grace
-// ran out on was killed, so its supervisor never recorded one, and that is an outcome not a failure.
-func (s *Service) lastExit(ctx context.Context, id string) (*models.ExitStatus, error) {
-	status, err := s.cfg.Provider.Wait(ctx, id)
-	if errors.Is(err, models.ErrNoExitStatus) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
+// byOperator marks a stop an operator asked for, which keeps unless-stopped processes down on a daemon start.
+func byOperator(sb *models.Sandbox) error {
+	sb.StoppedByOperator = true
 
-	return &status, nil
+	return nil
 }
 
 // Remove frees everything a stopped sandbox holds. A sandbox that is still up or paused is refused

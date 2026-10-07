@@ -61,7 +61,7 @@ export class AuthenticationError extends APIError {}
 /** PermissionDeniedError is a 403: the key's scopes do not cover the route, or the route is local to the host. */
 export class PermissionDeniedError extends APIError {}
 
-/** NotFoundError is a 404: no such sandbox, snapshot, command, file, secret or policy. */
+/** NotFoundError is a 404: no such sandbox, snapshot, command, process, file, secret or policy. */
 export class NotFoundError extends APIError {}
 
 /** InvalidRequestError is a 400 or a 413: the daemon refused the request as written. */
@@ -106,8 +106,8 @@ const codeStatus: ReadonlyMap<string, number> = new Map([
   ["exec_exited", 409],
   ["exec_running", 409],
   ["exec_limit", 429],
-  ["no_app", 409],
-  ["app_ended", 409],
+  ["no_process", 404],
+  ["process_limit", 409],
   ["command_not_started", 422],
   ["timeout", 504],
   ["internal", 500],

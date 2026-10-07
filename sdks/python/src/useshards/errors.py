@@ -86,7 +86,7 @@ class PermissionDeniedError(APIError):
 
 
 class NotFoundError(APIError):
-    """404: no such sandbox, snapshot, command, file, secret or policy."""
+    """404: no such sandbox, snapshot, command, process, file, secret or policy."""
 
 
 class InvalidRequestError(APIError):
@@ -133,8 +133,8 @@ _CODE_STATUS: Mapping[str, int] = {
     "exec_exited": 409,
     "exec_running": 409,
     "exec_limit": 429,
-    "no_app": 409,
-    "app_ended": 409,
+    "no_process": 404,
+    "process_limit": 409,
     "command_not_started": 422,
     "timeout": 504,
     "internal": 500,

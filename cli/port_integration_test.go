@@ -21,7 +21,8 @@ var portListener = []string{"/bin/sh", "-c", "exec nc -lk -p 8000 -s 127.0.0.1 -
 func TestAForwardOutlivesAStopAStartAndADaemonRestartAndGoesWithItsSandbox(t *testing.T) {
 	app, out := newCreateApp(t)
 
-	id := runDetached(t, app, out, portListener...)
+	// No run flags, so the listener keeps the unless-stopped default and a start runs it again.
+	id := runDetachedWith(t, app, out, nil, nil, portListener...)
 	t.Cleanup(func() { cleanUp(t, app, id) })
 
 	hostPort := freePort(t)

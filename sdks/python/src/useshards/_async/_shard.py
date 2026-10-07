@@ -32,7 +32,6 @@ from .._types import (
     PolicyRule,
     Port,
     PortForward,
-    Restart,
     SandboxInfo,
     SandboxList,
     SecretInfo,
@@ -41,7 +40,7 @@ from .._types import (
     Version,
 )
 from .._wire import AsyncCall, create_body
-from ._sandbox import AsyncApp, AsyncSandbox
+from ._sandbox import AsyncSandbox
 from ._transport import DEFAULT_TIMEOUT, AsyncTransport
 
 SandboxRef = AsyncSandbox | str
@@ -97,7 +96,6 @@ class AsyncShard:
         """create a sandbox"""
         body = create_body(
             image,
-            None,
             snapshot=snapshot,
             name=name,
             env=env,
@@ -110,47 +108,8 @@ class AsyncShard:
             disk_mib=disk_mib,
             ports=ports,
             swap_mib=swap_mib,
-            restart=None,
         )
         return AsyncSandbox(self._transport, await self._create(body))
-
-    async def run(
-        self,
-        image: str,
-        command: str | Sequence[str],
-        *,
-        name: str | None = None,
-        env: Mapping[str, str] | None = None,
-        workdir: str | None = None,
-        user: str | None = None,
-        secrets: Sequence[str] | None = None,
-        policy: str | None = None,
-        memory_mib: int | None = None,
-        vcpus: int | None = None,
-        disk_mib: int | None = None,
-        ports: Sequence[PortForward] | None = None,
-        swap_mib: int | None = None,
-        restart: Restart | None = None,
-    ) -> AsyncApp:
-        """create a sandbox and start its command"""
-        body = create_body(
-            image,
-            command,
-            snapshot=None,
-            name=name,
-            env=env,
-            workdir=workdir,
-            user=user,
-            secrets=secrets,
-            policy=policy,
-            memory_mib=memory_mib,
-            vcpus=vcpus,
-            disk_mib=disk_mib,
-            ports=ports,
-            swap_mib=swap_mib,
-            restart=restart,
-        )
-        return AsyncApp(self._transport, AsyncSandbox(self._transport, await self._create(body)))
 
     async def get(self, ref: str) -> AsyncSandbox:
         """Return a sandbox by id, id prefix or name."""

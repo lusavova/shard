@@ -1,11 +1,9 @@
-export { Shard, Policies, Secrets, Snapshots, type CreateOptions, type PortOptions, type RunOptions, type SandboxRef, type SandboxList, type SecretList, type SecretOptions } from "./shard.js";
+export { Shard, Policies, Secrets, Snapshots, type CreateOptions, type PortOptions, type SandboxRef, type SandboxList, type SecretList, type SecretOptions } from "./shard.js";
 export { Sandbox, type FollowOptions } from "./sandbox.js";
-export { App } from "./app.js";
+export { Process, Processes, type RunOptions } from "./process.js";
 export { Files, type FileEntry, type FileInfo, type FileType, type WriteOptions } from "./files.js";
 export { Ports } from "./ports.js";
 export type {
-  AppExit,
-  AppInfo,
   Capabilities,
   DNSMode,
   EgressDecision,
@@ -16,9 +14,11 @@ export type {
   PolicyRule,
   Port,
   PortForward,
+  ProcessInfo,
+  ProcessState,
+  ProcessStatus,
   Resources,
   Restart,
-  RestartInfo,
   RestartPolicy,
   SandboxInfo,
   SandboxState,

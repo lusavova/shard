@@ -22,9 +22,8 @@ const oomBudget = 3 * time.Minute
 func TestTheDaemonStartsAnOOMKilledSandboxAgain(t *testing.T) {
 	app, out := newCreateApp(t)
 
-	// The guest overruns its bound on the first run only, so the run the daemon brings back can be used.
-	script := "if [ ! -e /ran ]; then touch /ran; " + oomBomb + "; fi; while true; do sleep 1; done"
-	id := runDetachedWith(t, app, out, "--memory", oomBound(), testImage, "--", "/bin/sh", "-c", script)
+	// The process never starts again, so the run the daemon brings back holds no bomb and can be used.
+	id := runDetachedWith(t, app, out, []string{"--memory", oomBound()}, []string{"--restart", "no"}, "/bin/sh", "-c", "touch /ran; "+oomBomb)
 	t.Cleanup(func() { cleanUp(t, app, id) })
 
 	sb := awaitRecord(t, app, id, func(sb models.Sandbox) bool { return sb.State == models.StateRunning && sb.OOM != nil })
@@ -47,7 +46,8 @@ func TestTheDaemonStartsAnOOMKilledSandboxAgain(t *testing.T) {
 func TestAStopCallsOffTheStartAgainOfASandboxThatKeepsRunningOutOfMemory(t *testing.T) {
 	app, out := newCreateApp(t)
 
-	id := runDetachedWith(t, app, out, "--memory", oomBound(), testImage, "--", "/bin/sh", "-c", oomBomb)
+	// unless-stopped, the default, runs the bomb again on each start again.
+	id := runDetachedWith(t, app, out, []string{"--memory", oomBound()}, nil, "/bin/sh", "-c", oomBomb)
 	t.Cleanup(func() { cleanUp(t, app, id) })
 
 	sb := awaitRecord(t, app, id, func(sb models.Sandbox) bool { return sb.OOM != nil && sb.OOM.Kills == 2 })

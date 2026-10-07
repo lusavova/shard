@@ -221,11 +221,11 @@ or a sandbox.
 - **Break the CLI freely before 1.0.** A verb, a flag or an output may change
   shape in any release, with one changelog line each. Never keep a compatibility
   alias for the old form.
-- **A sandbox outlives its entrypoint.** When the entrypoint exits the sandbox
-  stays `running`, and you can still exec, pause or fork it. `stop` is the only
-  thing that ends one. There is no policy, no idle timer and no on-exit setting
-  to change any of this. This is why `shard-init` is PID 1 in every sandbox and
-  the command given to `shard run`, if any, is its child.
+- **A sandbox outlives its processes.** `shard-init` is PID 1 in every sandbox
+  and supervises the named processes that `shard run` starts as its children.
+  When any or all of them exit, the sandbox stays `running`, and you can still
+  exec, pause or fork it. `stop` is the only thing that ends one. No restart
+  policy, idle timer or on-exit setting changes that.
 - **The daemon never serves its API on TCP.** The only TCP it binds is the
   egress proxy and resolver on the sandbox gateway, and the host ports an
   operator forwarded with `shard port`, each of which carries bytes to one

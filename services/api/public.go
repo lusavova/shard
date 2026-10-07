@@ -22,13 +22,11 @@ type Sandbox struct {
 	Provider      string               `json:"provider"`
 	Kernel        string               `json:"kernel,omitempty"`
 	State         models.State         `json:"state" enum:"pending,created,running,paused,unresponsive,stopped,failed"`
-	ExitStatus    *models.ExitStatus   `json:"exit_status,omitempty"`
 	StoppedReason string               `json:"stopped_reason,omitempty"`
 	OOM           *OOM                 `json:"oom,omitempty"`
 	FailedReason  string               `json:"failed_reason,omitempty"`
 	Resources     models.Resources     `json:"resources"`
-	Command       []string             `json:"command,omitempty"`
-	Restart       *models.Restart      `json:"restart,omitempty"`
+	Processes     []models.Process     `json:"processes,omitempty"`
 	Secrets       []string             `json:"secrets,omitempty"`
 	Policy        string               `json:"policy,omitempty"`
 	Ports         []models.PortForward `json:"ports,omitempty"`
@@ -72,13 +70,11 @@ func PublicSandbox(sb models.Sandbox) Sandbox {
 		Provider:      sb.Provider,
 		Kernel:        sb.Kernel,
 		State:         sb.State,
-		ExitStatus:    sb.ExitStatus,
 		StoppedReason: publicStoppedReason(sb.StoppedReason),
 		OOM:           publicOOM(sb.OOM),
 		FailedReason:  sandbox.PublicReason(sb),
 		Resources:     sb.Resources,
-		Command:       sb.Command,
-		Restart:       sb.Restart,
+		Processes:     sb.Processes,
 		Secrets:       sb.Secrets,
 		Policy:        sb.Policy,
 		Ports:         sb.Ports,

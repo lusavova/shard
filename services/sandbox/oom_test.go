@@ -56,6 +56,37 @@ func TestLivenessStartsAnOOMKilledSandboxAgainOnceDue(t *testing.T) {
 	}
 }
 
+// The start again is the daemon's own, so it brings back what a daemon start does and no more (SHARD-790).
+func TestAnOOMStartAgainRunsTheProcessesADaemonStartBringsBack(t *testing.T) {
+	sb := withProcesses(owed(killedAt, 1), proc("web", models.RestartUnlessStopped), proc("job", models.RestartNo), proc("api", models.RestartOnFailure))
+	lab := newLivenessLab(t, sb, oomKilled())
+
+	if err := lab.tickAt(t, lab.l.repo.sb, killedAt); err != nil {
+		t.Fatalf("Liveness: %v", err)
+	}
+	if got := specNames(lab.l.provider.specs); !slices.Equal(got, []string{"web"}) {
+		t.Errorf("the start again ran %v, want web alone", got)
+	}
+}
+
+// The guest that comes back never knew the old run, so a process the start again leaves down must not hold its name.
+func TestAnOOMKillEndsTheProcessesTheStartAgainLeavesDown(t *testing.T) {
+	sb := withProcesses(running(), proc("web", models.RestartUnlessStopped), proc("job", models.RestartNo), proc("api", models.RestartOnFailure))
+	lab := newLivenessLab(t, sb, oomKilled())
+
+	for _, pass := range []string{"the kill", "the start again"} {
+		if err := lab.tickAt(t, lab.l.repo.sb, killedAt); err != nil {
+			t.Fatalf("Liveness, %s: %v", pass, err)
+		}
+	}
+
+	for _, name := range []string{"job", "api"} {
+		if _, err := lab.svc.Run(t.Context(), "sandbox1", sandbox.RunRequest{Name: name, Command: []string{name}}); err != nil {
+			t.Errorf("a run of %s after the start again: %v", name, err)
+		}
+	}
+}
+
 func TestLivenessWaitsOutTheBackoffBeforeAStartAgain(t *testing.T) {
 	due := killedAt.Add(20 * time.Second)
 	lab := newLivenessLab(t, owed(due, 3), oomKilled())

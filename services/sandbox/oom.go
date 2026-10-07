@@ -27,6 +27,7 @@ func (s *Service) recordOOMKilled(id string, sb models.Sandbox, now time.Time, r
 		rec.PID = 0
 		rec.StoppedReason = OOMKilledReason
 		rec.UnresponsiveReason = ""
+		rec.Processes = endProcesses(rec.Processes)
 		rec.OOM = &oom
 
 		return nil
@@ -97,6 +98,10 @@ func (s *Service) startAgainWhenDue(ctx context.Context, sb models.Sandbox, now 
 
 	if err := s.start(ctx, sb.ID); err != nil {
 		return s.retryOOMStart(sb.ID, current.OOM.RestartAt, now, err, report)
+	}
+	// SHARD-790 (shard's ruling), as on shard start: a process that fails to start again is reported, and the sandbox runs on.
+	if err := s.launch(ctx, sb.ID, daemonStart, nil); err != nil {
+		report(fmt.Sprintf("sandbox %s: %v", sb.ID, err))
 	}
 	report(fmt.Sprintf("sandbox %s: started again after it ran out of memory (%s)", sb.ID, kills(*current.OOM)))
 

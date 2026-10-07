@@ -3,17 +3,17 @@
 from ._async._command import AsyncCommand
 from ._async._files import AsyncFiles
 from ._async._follow import AsyncFollow
-from ._async._sandbox import AsyncApp, AsyncCommands, AsyncPorts, AsyncSandbox
+from ._async._process import AsyncProcess, AsyncProcesses
+from ._async._sandbox import AsyncCommands, AsyncPorts, AsyncSandbox
 from ._async._shard import AsyncPolicies, AsyncSecrets, AsyncShard, AsyncSnapshots
 from ._capture import DEFAULT_OUTPUT_LIMIT
 from ._sync._command import Command
 from ._sync._files import Files
 from ._sync._follow import Follow
-from ._sync._sandbox import App, Commands, Ports, Sandbox
+from ._sync._process import Process, Processes
+from ._sync._sandbox import Commands, Ports, Sandbox
 from ._sync._shard import Policies, Secrets, Shard, Snapshots
 from ._types import (
-    AppExit,
-    AppInfo,
     Capabilities,
     CommandInfo,
     CommandResult,
@@ -29,9 +29,11 @@ from ._types import (
     PolicyRule,
     Port,
     PortForward,
+    ProcessInfo,
+    ProcessState,
+    ProcessStatus,
     Resources,
     Restart,
-    RestartInfo,
     RestartPolicy,
     SandboxInfo,
     SandboxList,
@@ -64,16 +66,14 @@ from .errors import (
 __all__ = [
     "DEFAULT_OUTPUT_LIMIT",
     "APIError",
-    "App",
-    "AppExit",
-    "AppInfo",
-    "AsyncApp",
     "AsyncCommand",
     "AsyncCommands",
     "AsyncFiles",
     "AsyncFollow",
     "AsyncPolicies",
     "AsyncPorts",
+    "AsyncProcess",
+    "AsyncProcesses",
     "AsyncSandbox",
     "AsyncSecrets",
     "AsyncShard",
@@ -106,10 +106,14 @@ __all__ = [
     "Port",
     "PortForward",
     "Ports",
+    "Process",
+    "ProcessInfo",
+    "ProcessState",
+    "ProcessStatus",
+    "Processes",
     "ProtocolError",
     "Resources",
     "Restart",
-    "RestartInfo",
     "RestartPolicy",
     "Sandbox",
     "SandboxInfo",

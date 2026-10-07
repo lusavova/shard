@@ -33,7 +33,6 @@ from .._types import (
     PolicyRule,
     Port,
     PortForward,
-    Restart,
     SandboxInfo,
     SandboxList,
     SecretInfo,
@@ -42,7 +41,7 @@ from .._types import (
     Version,
 )
 from .._wire import Call, create_body
-from ._sandbox import App, Sandbox
+from ._sandbox import Sandbox
 from ._transport import DEFAULT_TIMEOUT, Transport
 
 SandboxRef = Sandbox | str
@@ -98,7 +97,6 @@ class Shard:
         """create a sandbox"""
         body = create_body(
             image,
-            None,
             snapshot=snapshot,
             name=name,
             env=env,
@@ -111,47 +109,8 @@ class Shard:
             disk_mib=disk_mib,
             ports=ports,
             swap_mib=swap_mib,
-            restart=None,
         )
         return Sandbox(self._transport, self._create(body))
-
-    def run(
-        self,
-        image: str,
-        command: str | Sequence[str],
-        *,
-        name: str | None = None,
-        env: Mapping[str, str] | None = None,
-        workdir: str | None = None,
-        user: str | None = None,
-        secrets: Sequence[str] | None = None,
-        policy: str | None = None,
-        memory_mib: int | None = None,
-        vcpus: int | None = None,
-        disk_mib: int | None = None,
-        ports: Sequence[PortForward] | None = None,
-        swap_mib: int | None = None,
-        restart: Restart | None = None,
-    ) -> App:
-        """create a sandbox and start its command"""
-        body = create_body(
-            image,
-            command,
-            snapshot=None,
-            name=name,
-            env=env,
-            workdir=workdir,
-            user=user,
-            secrets=secrets,
-            policy=policy,
-            memory_mib=memory_mib,
-            vcpus=vcpus,
-            disk_mib=disk_mib,
-            ports=ports,
-            swap_mib=swap_mib,
-            restart=restart,
-        )
-        return App(self._transport, Sandbox(self._transport, self._create(body)))
 
     def get(self, ref: str) -> Sandbox:
         """Return a sandbox by id, id prefix or name."""

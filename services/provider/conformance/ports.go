@@ -66,6 +66,7 @@ func RunPorts(t *testing.T, s Subject) {
 		if err := s.Provider.Start(t.Context(), id); err != nil {
 			t.Fatalf("Start: %v", err)
 		}
+		s.listen(t, id)
 		if err := ports.Open(id, forward); err != nil {
 			t.Fatal(err)
 		}
@@ -73,14 +74,21 @@ func RunPorts(t *testing.T, s Subject) {
 	})
 }
 
-// listening starts a sandbox whose entrypoint greets each connection to guestPort on its own loopback, then echoes it.
+// listening starts a sandbox with a listener on guestPort.
 func (s Subject) listening(t *testing.T) string {
 	t.Helper()
 
-	spec := s.NewSpec(t)
-	spec.Entrypoint = s.Shell("exec nc -lk -p " + strconv.Itoa(guestPort) + " -s 127.0.0.1 -e /bin/sh -c 'echo " + greeting + "; exec cat'")
+	id := s.running(t)
+	s.listen(t, id)
 
-	return s.start(t, spec)
+	return id
+}
+
+// listen runs a process that greets each connection to guestPort on the sandbox's own loopback, then echoes it.
+func (s Subject) listen(t *testing.T, id string) {
+	t.Helper()
+
+	s.run(t, id, models.ProcessSpec{Name: "listener", Argv: s.Shell("exec nc -lk -p " + strconv.Itoa(guestPort) + " -s 127.0.0.1 -e /bin/sh -c 'echo " + greeting + "; exec cat'")})
 }
 
 // forwarder is the daemon's, over this provider, with no listener left once the test ends.
