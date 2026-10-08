@@ -92,9 +92,13 @@
 }
 .site-title .pixel-logo {
 	flex: none;
-	width: 36px;
-	height: 33px;
+	width: 24px;
+	height: 24px;
 	color: var(--blue);
+}
+/* The ice mark vanishes on paper, so the light theme draws it in ink. */
+:root[data-theme='light'] .site-title .pixel-logo {
+	color: #0a2a48;
 }
 .site-title .wordmark {
 	font: 600 23px/1 var(--display);
@@ -107,14 +111,38 @@
 	text-transform: uppercase;
 	color: var(--muted);
 }
+/* GitHub is the one solid control in the header, as on the landing page. */
 .nav-link {
-	font-size: 14px;
-	color: var(--ink);
+	display: inline-flex;
+	align-items: center;
+	gap: 8px;
+	height: 32px;
+	padding: 0 12px;
+	border-radius: 2px;
+	background: #acd3f1;
+	color: #0a2a48;
+	font: 500 13px var(--mono);
 	text-decoration: none;
 	white-space: nowrap;
+	transition: background 0.2s;
 }
 .nav-link:hover {
-	color: var(--blue);
+	background: #d6efff;
+	color: #0a2a48;
+}
+/* The pale key fades on paper, so the light theme draws it in ink like the mark. */
+:root[data-theme='light'] .nav-link {
+	background: #0a2a48;
+	color: #faf9f8;
+}
+:root[data-theme='light'] .nav-link:hover {
+	background: #164a78;
+	color: #faf9f8;
+}
+.nav-link .gh {
+	width: 16px;
+	height: 16px;
+	fill: currentColor;
 }
 .theme-toggle {
 	display: grid;
