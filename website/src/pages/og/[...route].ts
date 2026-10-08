@@ -12,7 +12,7 @@ export const { getStaticPaths, GET } = await OGImageRoute({
 	getImageOptions: (_, page: typeof LANDING) => ({
 		title: page.title,
 		description: page.description,
-		logo: { path: './public/logo-simple.png', size: [120] },
+		logo: { path: './public/og-logo.png', size: [120] },
 		bgGradient: [
 			[3, 11, 19],
 			[5, 41, 85],
